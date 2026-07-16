@@ -36,6 +36,9 @@ type (
 		Phone                   string
 		LoginDomain             string
 		ClientDataFile          string
+		QYWechatQRCodeFile      string
+		QYWechatQRCodeTerminal  bool
+		QYWechatQRCodeBrowser   bool
 		SID                     string
 		DeviceID                string
 		SignKey                 string
@@ -88,6 +91,9 @@ type (
 		Phone                   *string                    `toml:"phone"`
 		LoginDomain             *string                    `toml:"login_domain"`
 		ClientDataFile          *string                    `toml:"client_data_file"`
+		QYWechatQRCodeFile      *string                    `toml:"qywechat_qrcode_file"`
+		QYWechatQRCodeTerminal  *bool                      `toml:"qywechat_qrcode_terminal"`
+		QYWechatQRCodeBrowser   *bool                      `toml:"qywechat_qrcode_browser"`
 		SID                     *string                    `toml:"sid"`
 		DeviceID                *string                    `toml:"device_id"`
 		SignKey                 *string                    `toml:"sign_key"`

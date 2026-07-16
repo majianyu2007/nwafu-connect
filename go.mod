@@ -6,7 +6,9 @@ replace inet.af/netaddr => github.com/inetaf/netaddr v0.0.0-20230525184311-b8eac
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/boombuler/barcode v1.1.0
 	github.com/containers/winquit v1.1.0
+	github.com/liyue201/goqr v0.0.0-20200803022322-df443203d4ea
 	github.com/miekg/dns v1.1.72
 	github.com/mythologyli/sing-tun v0.0.0-20260201144630-c04d9db95dc7
 	github.com/patrickmn/go-cache v2.1.0+incompatible
@@ -23,7 +25,6 @@ require (
 )
 
 require (
-	github.com/boombuler/barcode v1.1.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect

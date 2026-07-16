@@ -11,8 +11,8 @@ NWAFU Connect 是面向西北农林科技大学 `vpn.nwafu.edu.cn` 的第三方 
 | 认证方式 | aTrust 标识 | 状态 |
 | --- | --- | --- |
 | LDAP（学号、密码、TOTP） | `auth/psw` / `LDAP` | 已完成真实账号验证 |
-| 手机号、短信验证码 | `auth/smsCheckCode` / `sms73926` | 继承 aTrust 短信交互支持 |
-| 企业微信 | `auth/qywechat` / `wechat` | 网关可用；本 CLI 暂不实现扫码登录 |
+| 手机号、短信验证码 | `auth/smsCheckCode` / `sms73926` | 已实现交互流程，待真实号码验证 |
+| 企业微信 | `auth/qywechat` / `wechat` | 已实现浏览器扫码登录 |
 
 本仓库只支持 aTrust。学校已经停用的 EasyConnect 实现及配置已删除。
 
@@ -45,6 +45,40 @@ http_bind = "127.0.0.1:1081"
 ```
 
 `totp_secret` 是 Base32 格式的验证器密钥。程序会在 LDAP 密码认证成功后生成当前动态口令，并提交到 aTrust `/passport/v1/auth/token`。
+
+手机号 + 短信验证码的最小配置：
+
+```toml
+server_address = "vpn.nwafu.edu.cn"
+server_port = 443
+auth_type = "auth/smsCheckCode"
+login_domain = "sms73926"
+phone = "86-你的手机号"
+graph_code_file = ""
+client_data_file = ""
+socks_bind = ""
+http_bind = ""
+disable_remote_dns = true
+```
+
+`phone` 使用“国家代码-手机号”格式，例如 `86-13800138000`。运行 `go run . -config config.toml` 后，客户端先调用 `/passport/v1/public/sendSms`；如果网关要求图形验证码，会打开仅监听 `127.0.0.1` 的交互页面。收到短信后，在终端的 `Please enter the SMS verification code:` 提示处输入验证码。出现 `VPN client started` 才表示短信、ticket 换取和资源获取全链路成功。测试时不要启用 `debug_dump`，也不要频繁触发短信发送。
+
+企业微信扫码登录无需填写账号和密码：
+
+```toml
+server_address = "vpn.nwafu.edu.cn"
+server_port = 443
+auth_type = "auth/qywechat"
+login_domain = "wechat"
+qywechat_qrcode_browser = true
+qywechat_qrcode_terminal = true
+qywechat_qrcode_file = "qywechat_qrcode.png"
+client_data_file = "client_data.json"
+socks_bind = "127.0.0.1:1080"
+http_bind = "127.0.0.1:1081"
+```
+
+启动后程序会打开仅监听 `127.0.0.1` 的临时页面、在 CLI 渲染二维码，并将原始 PNG 以 `0600` 权限保存到当前目录。三种输出可分别通过 `qywechat_qrcode_browser`、`qywechat_qrcode_terminal` 和 `qywechat_qrcode_file` 控制。浏览器页面会显示等待扫码、确认中、成功或失败状态。客户端轮询企业微信扫码结果，校验回调的主机、路径、登录域和 `state`，再向当前 aTrust 会话换取 ticket；二维码默认 60 秒失效。
 
 运行：
 

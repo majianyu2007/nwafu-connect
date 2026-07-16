@@ -202,7 +202,7 @@ func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted b
 	}
 }
 
-func (c *Client) Setup(serverAddress string, serverPort int, username, password, totpSecret, phone, loginDomain, authType, graphCodeFile string, authData, resourceData []byte, updateBestNodesInterval int) ([]byte, error) {
+func (c *Client) Setup(serverAddress string, serverPort int, username, password, totpSecret, phone, loginDomain, authType, graphCodeFile, qyWechatQRCodeFile string, qyWechatQRCodeTerminal, qyWechatQRCodeBrowser bool, authData, resourceData []byte, updateBestNodesInterval int) ([]byte, error) {
 	c.serverAddress = serverAddress
 
 	if c.SID != "" && c.DeviceID != "" && resourceData != nil {
@@ -253,6 +253,13 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 				Phone:         phone,
 				Domain:        loginDomain,
 				GraphCodeFile: graphCodeFile,
+			}
+		case "auth/qywechat":
+			loginMethod = auth.QYWechatLogin{
+				Domain:      loginDomain,
+				QRCodeFile:  qyWechatQRCodeFile,
+				PrintQRCode: qyWechatQRCodeTerminal,
+				OpenBrowser: qyWechatQRCodeBrowser,
 			}
 		case "":
 			log.Println("No auth type specified, trying to skip auth")

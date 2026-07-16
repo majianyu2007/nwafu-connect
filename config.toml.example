@@ -36,10 +36,13 @@ custom_dns = [
 ]
 
 # aTrust authentication settings
-auth_type = "auth/psw" # LDAP: auth/psw; SMS: auth/smsCheckCode
-login_domain = "LDAP" # SMS uses sms73926; enterprise WeChat is not a headless credential flow
+auth_type = "auth/psw" # LDAP: auth/psw; SMS: auth/smsCheckCode; enterprise WeChat: auth/qywechat
+login_domain = "LDAP" # SMS uses sms73926; enterprise WeChat uses wechat
 client_data_file = "client_data.json"
 graph_code_file = "" # Optional: captcha image will open in browser if this left empty. If set, the program will save the captcha image to this file and ask user to input the code in terminal.
+qywechat_qrcode_file = "qywechat_qrcode.png" # Relative paths are saved in the current working directory; empty disables saving.
+qywechat_qrcode_terminal = true
+qywechat_qrcode_browser = true
 phone = ""
 update_best_nodes_interval = 300
 sid = ""

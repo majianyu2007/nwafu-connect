@@ -94,10 +94,19 @@ func NewSession(server string) *Session {
 }
 
 type AuthInfo struct {
-	LoginDomain string `json:"loginDomain"`
-	AuthType    string `json:"authType"`
-	AuthName    string `json:"authName"`
-	LoginURL    string `json:"loginUrl"`
+	LoginDomain            string               `json:"loginDomain"`
+	AuthType               string               `json:"authType"`
+	AuthName               string               `json:"authName"`
+	LoginURL               string               `json:"loginUrl"`
+	QYWechatQrcodeConf     QYWechatQrcodeConfig `json:"qyWechatQrcodeConf"`
+	ThirdAuthQrcodeTimeout int                  `json:"thirdAuthQrcodeTimeout"`
+}
+
+type QYWechatQrcodeConfig struct {
+	AppID       string `json:"appid"`
+	AgentID     string `json:"agentid"`
+	RedirectURI string `json:"redirect_uri"`
+	State       string `json:"state"`
 }
 
 type LoginOptions struct {

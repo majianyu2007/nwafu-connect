@@ -16,10 +16,12 @@ NWAFU Connect is a Go command-line aTrust client specialized for Northwest A&F U
 
 LDAP flow: `/passport/v1/auth/psw` → `/controller/v1/public/reportEnv` → `/passport/v1/auth/authCheck` → `auth/token` subtype `totp` → `/passport/v1/auth/token` → resource/node setup. Preserve `authId`, `taskId`, subtype mapping, CSRF headers, and routing context metadata.
 
+WeCom flow: `authConfig` supplies the app, agent, redirect URI, and `state`; `auth/qywechat` fetches and polls the WeCom QR session, exposes optional loopback WebUI/CLI/file outputs, validates the synthesized callback, exchanges it for the portal ticket, then resumes normal authentication and resource/node setup. Keep callback host/path/domain/state validation and WebUI status feedback intact.
+
 ## Key Directories
 
 - `client/atrust/`: aTrust session, resources, nodes, binary L3/TCP protocols.
-- `client/atrust/auth/`: Password, SMS, CAS/OAuth helpers, captcha, device trust, and TOTP secondary authentication.
+- `client/atrust/auth/`: Password, SMS, WeCom QR callback, captcha, device trust, and TOTP secondary authentication.
 - `stack/`: gVisor, native TUN, and TCP-only stacks behind `stack.Stack`.
 - `dial/`: Resource-aware VPN/direct routing and optional upstream proxies.
 - `resolve/`: DNS resource matching, fake-IP mapping, and cache.

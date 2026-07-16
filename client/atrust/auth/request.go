@@ -570,10 +570,10 @@ func parsePortalTicketFromRedirect(redirectLocation, baseHost string) (string, e
 	if redirectURL.Scheme != "https" {
 		return "", fmt.Errorf("invalid redirect url: scheme not https")
 	}
-	if redirectURL.Host != baseHost {
+	if !sameHTTPSAuthority(redirectURL, baseHost) {
 		return "", fmt.Errorf("invalid redirect url: host not match")
 	}
-	if redirectURL.Path != "/portal/shortcut.html" {
+	if redirectURL.Path != "/portal/shortcut.html" && redirectURL.Path != "/portal/qrcode_middle.html" {
 		return "", fmt.Errorf("invalid redirect url: path not match")
 	}
 	queries := redirectURL.Query()

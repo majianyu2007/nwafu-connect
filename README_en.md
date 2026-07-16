@@ -11,8 +11,8 @@ Inspect the live gateway with `nwafu-connect -auth-info`:
 | Method | aTrust identifiers | Status |
 | --- | --- | --- |
 | LDAP account, password, and TOTP | `auth/psw` / `LDAP` | Verified with a real account |
-| Phone and SMS code | `auth/smsCheckCode` / `sms73926` | Supported by the inherited aTrust SMS flow |
-| WeCom | `auth/qywechat` / `wechat` | Offered by the gateway; QR login is not implemented by this CLI |
+| Phone and SMS code | `auth/smsCheckCode` / `sms73926` | Interactive flow implemented; live phone verification pending |
+| WeCom | `auth/qywechat` / `wechat` | Browser-based QR login implemented |
 
 This repository is aTrust-only. The obsolete EasyConnect implementation and configuration have been removed.
 
@@ -45,6 +45,40 @@ http_bind = "127.0.0.1:1081"
 ```
 
 `totp_secret` is the Base32 authenticator seed. After LDAP password authentication, the client generates the current token and submits it to aTrust `/passport/v1/auth/token`.
+
+Minimal phone + SMS configuration:
+
+```toml
+server_address = "vpn.nwafu.edu.cn"
+server_port = 443
+auth_type = "auth/smsCheckCode"
+login_domain = "sms73926"
+phone = "86-your-phone-number"
+graph_code_file = ""
+client_data_file = ""
+socks_bind = ""
+http_bind = ""
+disable_remote_dns = true
+```
+
+Use `country-code-phone-number` format for `phone`, for example `86-13800138000`. After `go run . -config config.toml`, the client first calls `/passport/v1/public/sendSms`; if the gateway requires a graphical captcha, it opens an interactive page bound only to `127.0.0.1`. Enter the received code at the terminal's `Please enter the SMS verification code:` prompt. Only `VPN client started` confirms the complete SMS, ticket exchange, and resource-loading path. Keep `debug_dump` disabled and avoid repeatedly requesting SMS codes.
+
+WeCom QR login does not require a username or password:
+
+```toml
+server_address = "vpn.nwafu.edu.cn"
+server_port = 443
+auth_type = "auth/qywechat"
+login_domain = "wechat"
+qywechat_qrcode_browser = true
+qywechat_qrcode_terminal = true
+qywechat_qrcode_file = "qywechat_qrcode.png"
+client_data_file = "client_data.json"
+socks_bind = "127.0.0.1:1080"
+http_bind = "127.0.0.1:1081"
+```
+
+On startup, the client opens a temporary page bound only to `127.0.0.1`, renders the QR code in the CLI, and saves the original PNG with mode `0600` in the current directory. Control these outputs independently with `qywechat_qrcode_browser`, `qywechat_qrcode_terminal`, and `qywechat_qrcode_file`. The browser page reports waiting, confirmation, success, and failure states. The client polls WeCom, validates the callback host, path, login domain, and `state`, then exchanges it for the current aTrust ticket. The QR code expires after 60 seconds by default.
 
 Run the client:
 
