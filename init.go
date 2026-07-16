@@ -18,7 +18,7 @@ var CommitID string
 
 const (
 	applicationName      = "NWAFU Connect"
-	nwafuConnectVersion  = "1.2.0"
+	nwafuConnectVersion  = "1.3.0"
 	defaultServerAddress = "vpn.nwafu.edu.cn"
 	defaultAuthType      = "auth/psw"
 	defaultLoginDomain   = "LDAP"
