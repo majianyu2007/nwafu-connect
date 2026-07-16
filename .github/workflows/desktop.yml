@@ -1,0 +1,178 @@
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.arch }} DMG
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: amd64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build native application
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/NWAFU Connect.app/Contents/MacOS" "dist/NWAFU Connect.app/Contents/Resources"
+          go build -trimpath -ldflags "-s -w" -o "dist/NWAFU Connect.app/Contents/MacOS/nwafu-connect-desktop" ./cmd/nwafu-connect-desktop
+          go build -trimpath -ldflags "-s -w -X main.CommitID=${GITHUB_SHA}" -o "dist/NWAFU Connect.app/Contents/MacOS/nwafu-connect" .
+          go build -trimpath -ldflags "-s -w" -o "dist/NWAFU Connect.app/Contents/MacOS/nwafu-connect-proxy" ./cmd/nwafu-connect-proxy
+          cp packaging/macos/Info.plist "dist/NWAFU Connect.app/Contents/Info.plist"
+      - name: Create application icon
+        run: |
+          set -euo pipefail
+          mkdir -p dist/NWAFUConnect.iconset
+          source=cmd/nwafu-connect-desktop/assets/app-icon.png
+          sips -z 16 16 "$source" --out dist/NWAFUConnect.iconset/icon_16x16.png
+          sips -z 32 32 "$source" --out dist/NWAFUConnect.iconset/icon_16x16@2x.png
+          sips -z 32 32 "$source" --out dist/NWAFUConnect.iconset/icon_32x32.png
+          sips -z 64 64 "$source" --out dist/NWAFUConnect.iconset/icon_32x32@2x.png
+          sips -z 128 128 "$source" --out dist/NWAFUConnect.iconset/icon_128x128.png
+          sips -z 256 256 "$source" --out dist/NWAFUConnect.iconset/icon_128x128@2x.png
+          sips -z 256 256 "$source" --out dist/NWAFUConnect.iconset/icon_256x256.png
+          sips -z 512 512 "$source" --out dist/NWAFUConnect.iconset/icon_256x256@2x.png
+          sips -z 512 512 "$source" --out dist/NWAFUConnect.iconset/icon_512x512.png
+          sips -z 1024 1024 "$source" --out dist/NWAFUConnect.iconset/icon_512x512@2x.png
+          iconutil -c icns dist/NWAFUConnect.iconset -o "dist/NWAFU Connect.app/Contents/Resources/NWAFUConnect.icns"
+      - name: Package DMG
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" == "$GITHUB_REF_NAME" ]] && version="dev"
+          codesign --force --deep --sign - "dist/NWAFU Connect.app"
+          mkdir -p dist/dmg
+          cp -R "dist/NWAFU Connect.app" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -quiet -volname "NWAFU Connect" -srcfolder dist/dmg -ov -format UDZO "dist/NWAFU-Connect-${version}-macos-${{ matrix.arch }}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NWAFU-Connect-macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows amd64 installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install packaging tools
+        shell: powershell
+        run: choco install innosetup imagemagick mingw --no-progress -y
+      - name: Build native application
+        shell: powershell
+        env:
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          go build -trimpath -ldflags "-H=windowsgui -s -w" -o dist/nwafu-connect-desktop.exe ./cmd/nwafu-connect-desktop
+          go build -trimpath -ldflags "-s -w -X main.CommitID=$env:GITHUB_SHA" -o dist/nwafu-connect.exe .
+          go build -trimpath -ldflags "-s -w" -o dist/nwafu-connect-proxy.exe ./cmd/nwafu-connect-proxy
+          magick cmd/nwafu-connect-desktop/assets/app-icon.png -define icon:auto-resize=256,128,64,48,32,16 dist/icon.ico
+      - name: Package installer
+        shell: powershell
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ($version -eq $env:GITHUB_REF_NAME) { $version = 'dev' }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DSourceDir=$pwd\dist" "/DOutputDir=$pwd\dist" "/DVersion=$version" packaging/windows/NWAFUConnect.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NWAFU-Connect-windows-amd64
+          path: dist/*-setup.exe
+          if-no-files-found: error
+
+  linux:
+    name: Linux amd64 DEB
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install desktop build dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libayatana-appindicator3-dev
+      - name: Build native application
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+          mkdir -p dist/root/DEBIAN dist/root/usr/bin dist/root/usr/share/applications dist/root/usr/share/icons/hicolor/256x256/apps
+          go build -trimpath -ldflags "-s -w" -o dist/root/usr/bin/nwafu-connect-desktop ./cmd/nwafu-connect-desktop
+          go build -trimpath -ldflags "-s -w -X main.CommitID=${GITHUB_SHA}" -o dist/root/usr/bin/nwafu-connect .
+          go build -trimpath -ldflags "-s -w" -o dist/root/usr/bin/nwafu-connect-proxy ./cmd/nwafu-connect-proxy
+          install -m 0644 packaging/linux/nwafu-connect.desktop dist/root/usr/share/applications/nwafu-connect.desktop
+          install -m 0644 cmd/nwafu-connect-desktop/assets/app-icon.png dist/root/usr/share/icons/hicolor/256x256/apps/nwafu-connect.png
+      - name: Package DEB
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" == "$GITHUB_REF_NAME" ]] && version="1.2.0~dev"
+          cat > dist/root/DEBIAN/control <<EOF
+          Package: nwafu-connect
+          Version: ${version}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: NWAFU Connect contributors
+          Depends: libgl1, libx11-6, libxcursor1, libxrandr2, libxinerama1, libxi6, libxxf86vm1, libayatana-appindicator3-1
+          Description: NWAFU aTrust managed browser and tray client
+           Private Chromium browser access to server-issued campus resources.
+          EOF
+          dpkg-deb --root-owner-group --build dist/root "dist/NWAFU-Connect-${version}-linux-amd64.deb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NWAFU-Connect-linux-amd64
+          path: dist/*.deb
+          if-no-files-found: error
+
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: NWAFU-Connect-*
+          path: dist
+          merge-multiple: true
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "NWAFU Connect ${GITHUB_REF_NAME}" \
+            --generate-notes

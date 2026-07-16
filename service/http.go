@@ -35,24 +35,24 @@ import (
 // IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-func ServeHTTP(bindAddr string, dialer *dial.Dialer) {
+func StartHTTP(bindAddr string, dialer *dial.Dialer) (string, error) {
 	client := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, net, addr string) (net.Conn, error) {
 				return dialer.Dial(ctx, net, addr)
 			},
 		},
-		// We must pass redirect response to browser
+		// We must pass redirect response to browser.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 
 	handlerFunc := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method == "CONNECT" {
+		if req.Method == http.MethodConnect {
 			serverConn, err := dialer.Dial(context.Background(), "tcp", req.Host)
 			if err != nil {
-				w.WriteHeader(500)
+				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte(err.Error() + "\n"))
 				return
 			}
@@ -60,67 +60,72 @@ func ServeHTTP(bindAddr string, dialer *dial.Dialer) {
 			hijacker, ok := w.(http.Hijacker)
 			if !ok {
 				_ = serverConn.Close()
-				w.WriteHeader(500)
+				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte("Failed cast to hijacker\n"))
 				return
 			}
 
-			w.WriteHeader(200)
-
-			_, bio, err := hijacker.Hijack()
+			w.WriteHeader(http.StatusOK)
+			clientConn, bio, err := hijacker.Hijack()
 			if err != nil {
-				w.WriteHeader(500)
-				_, _ = w.Write([]byte(err.Error() + "\n"))
 				_ = serverConn.Close()
 				return
 			}
 
 			go func() {
 				_, _ = io.Copy(serverConn, bio)
+				_ = serverConn.Close()
 			}()
 			go func() {
 				_, _ = io.Copy(bio, serverConn)
+				_ = clientConn.Close()
 			}()
-		} else {
-			req.RequestURI = ""
-
-			resp, err := client.Do(req)
-			if err != nil {
-				w.WriteHeader(500)
-				_, _ = w.Write([]byte(err.Error() + "\n"))
-				return
-			}
-
-			hdr := w.Header()
-			for k, v := range resp.Header {
-				hdr[k] = v
-			}
-
-			w.WriteHeader(resp.StatusCode)
-
-			_, _ = io.Copy(w, resp.Body)
+			return
 		}
+
+		req.RequestURI = ""
+		resp, err := client.Do(req)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(err.Error() + "\n"))
+			return
+		}
+		defer resp.Body.Close()
+
+		hdr := w.Header()
+		for key, values := range resp.Header {
+			hdr[key] = values
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
 	})
 
-	log.Printf("HTTP server listening on %s", bindAddr)
-
-	server := &http.Server{Addr: bindAddr, Handler: handlerFunc}
+	listener, err := net.Listen("tcp", bindAddr)
+	if err != nil {
+		return "", fmt.Errorf("start HTTP listener: %w", err)
+	}
+	actualAddr := listener.Addr().String()
+	server := &http.Server{Handler: handlerFunc}
+	log.Printf("HTTP server listening on %s", actualAddr)
 
 	hook_func.RegisterTerminalFunc("CloseHTTPListener", func(ctx context.Context) error {
 		log.Println("Closing HTTP listener...")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
+		if err := server.Shutdown(shutdownContext); err != nil {
 			return fmt.Errorf("close HTTP listener failed: %w", err)
 		}
 		return nil
 	})
 
-	if err := server.ListenAndServe(); err != nil {
-		if errors.Is(err, http.ErrServerClosed) {
-			log.Println("HTTP server closed")
-		} else {
-			log.Println("HTTP listen failed: " + err.Error())
+	go func() {
+		if err := server.Serve(listener); err != nil {
+			if errors.Is(err, http.ErrServerClosed) {
+				log.Println("HTTP server closed")
+			} else {
+				log.Println("HTTP listen failed: " + err.Error())
+			}
 		}
-	}
+	}()
+	return actualAddr, nil
 }

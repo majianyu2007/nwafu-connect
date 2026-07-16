@@ -12,6 +12,12 @@ type (
 		SocksUser          string
 		SocksPasswd        string
 		HTTPBind           string
+		BrowserMode        bool
+		BrowserPath        string
+		BrowserURL         string
+		BrowserProfileDir  string
+		BrowserStayRunning bool
+		BrowserStateFile   string
 		PortForwardingList []SinglePortForwarding
 		ShadowsocksURL     string
 		DialDirectProxy    string
@@ -70,6 +76,9 @@ type (
 		SocksUser               *string                    `toml:"socks_user"`
 		SocksPasswd             *string                    `toml:"socks_passwd"`
 		HTTPBind                *string                    `toml:"http_bind"`
+		BrowserMode             *bool                      `toml:"browser_mode"`
+		BrowserPath             *string                    `toml:"browser_path"`
+		BrowserURL              *string                    `toml:"browser_url"`
 		ShadowsocksURL          *string                    `toml:"shadowsocks_url"`
 		DialDirectProxy         *string                    `toml:"dial_direct_proxy"`
 		TCPTunnelMode           *bool                      `toml:"tcp_tunnel_mode"`

@@ -17,10 +17,9 @@ import (
 	"errors"
 )
 
-// ErrACLDenied is returned by DialIPPort when the caller forces VPN routing
-// for a destination outside the server-issued resource list. Refusing it
-// client-side avoids sending traffic the Sangfor gateway will reject.
-var ErrACLDenied = errors.New("destination not in sangfor IPResources whitelist (would trigger tunnel SHUTDOWN)")
+// ErrACLDenied is returned when a caller forces VPN routing for a destination
+// outside the resources authorized by the aTrust gateway.
+var ErrACLDenied = errors.New("destination not in aTrust resources")
 
 type Dialer struct {
 	stack                stack.Stack
@@ -100,16 +99,11 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 		log.Printf("Illegal situation, host is not pure IP format: %s", ip)
 		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 	}
-
 	if d.alwaysUseVPN {
 		useVPN = true
 	}
 
-	// Track whether dst:port matches any sangfor-issued resource. We always
-	// run both resource lookups (even if useVPN was already forced true by
-	// alwaysUseVPN) so we can enforce the server-side ACL client-side.
 	matchedResource := false
-
 	if res := ctx.Value(resolve.ContextKeyDomainResource); res != nil {
 		resource := res.(client.DomainResource)
 		if resource.PortMin <= port && port <= resource.PortMax {
@@ -134,11 +128,8 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 		}
 	}
 
-	// Enforce the server-issued resource ACL when callers force VPN routing.
-	// If resources are unavailable, there is no whitelist to enforce. An
-	// empty but non-nil slice means no IP destinations are allowed.
 	if useVPN && !matchedResource && d.ipResources != nil {
-		log.Printf("ACL: refusing %s/%s — not in sangfor IPResources whitelist (would trigger tunnel SHUTDOWN)", ipAddr, network)
+		log.Printf("ACL: refusing %s/%s because it is not authorized by the aTrust gateway", ipAddr, network)
 		return nil, ErrACLDenied
 	}
 

@@ -19,6 +19,8 @@ type ClientResource struct {
 					Apps []struct {
 						ID          string
 						NodeGroupID string
+						Name        string
+						Description string
 						AddressList []struct {
 							Protocol string
 							Port     string
@@ -76,9 +78,11 @@ func (c *Client) parseResource(resource []byte) error {
 	c.ipResources = make([]client.IPResource, 0)
 	c.domainResources = make(map[string]client.DomainResource)
 	c.dnsResource = make(map[string]net.IP)
+	c.resources = make([]client.Resource, 0)
 
 	for _, app := range clientResource.Data.AppList.Data.AppInfo {
 		for _, appItem := range app.Apps {
+			parsedResource := client.Resource{Name: appItem.Name, Description: appItem.Description}
 			for _, address := range appItem.AddressList {
 				if address.Protocol == "tcp" || address.Protocol == "udp" || address.Protocol == "all" {
 					// Handle port
@@ -110,6 +114,12 @@ func (c *Client) parseResource(resource []byte) error {
 						}
 						portMax = portMin // Single port means min and max are the same
 					}
+					parsedResource.Addresses = append(parsedResource.Addresses, client.ResourceAddress{
+						Host:     address.Host,
+						PortMin:  portMin,
+						PortMax:  portMax,
+						Protocol: address.Protocol,
+					})
 
 					// Handle host
 					hostStr := address.Host
@@ -227,6 +237,9 @@ func (c *Client) parseResource(resource []byte) error {
 						}
 					}
 				}
+			}
+			if len(parsedResource.Addresses) > 0 {
+				c.resources = append(c.resources, parsedResource)
 			}
 		}
 	}

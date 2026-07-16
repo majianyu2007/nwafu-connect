@@ -115,6 +115,28 @@ HTTP server listening on :1081
 SOCKS5 server listening on :1080
 ```
 
+## Managed browser mode
+
+If the only goal is browsing campus web services, enable managed browser mode instead of configuring SOCKS5, a system proxy, TUN routes, or additional split-routing rules:
+
+```toml
+browser_mode = true
+browser_url = "" # Show a home page built from this aTrust session's resources
+browser_path = "" # Auto-detect Chrome, Edge, Chromium, or Brave
+```
+
+After `nwafu-connect -config config.toml` starts:
+
+1. The client completes aTrust authentication and loads the server-issued resource rules.
+2. It starts a private HTTP CONNECT proxy on a random `127.0.0.1` port.
+3. It launches a Chromium-based browser with an isolated temporary profile, without changing the system proxy or touching the user's normal browser data.
+4. Every browser HTTP/HTTPS request enters the private proxy. Only IP/domain resources authorized by the aTrust gateway enter the VPN; unauthorized destinations are rejected locally and never fall back to a host direct connection or host proxy. When the gateway provides no DNS server, browser mode uses encrypted DoH without the system resolver to prevent Clash/FlClash Fake-IP contamination. QUIC and unproxied WebRTC UDP are disabled to prevent bypasses.
+5. Closing the last managed browser window removes the temporary profile and shuts down the proxy, resolver, tunnel, and aTrust session in order.
+
+Browser mode does not start configured public SOCKS5, HTTP, DNS, Shadowsocks, or port-forwarding listeners. Its default home page groups the current aTrust session's complete resource metadata by application, including name, description, every address, protocol, and port range. `browser_url` only overrides the optional start page and is not an authorization or routing rule.
+
+The lightweight implementation currently supports Windows, macOS, and Linux by reusing an installed Chrome, Edge, Chromium, or Brave executable rather than adding hundreds of megabytes of Chromium to every release. Windows normally has Edge available; on other systems, set `browser_path` if auto-detection finds no browser. Android and iOS require separate application shells and platform WebViews and are not part of this desktop implementation.
+
 Run the client:
 
 ```bash

@@ -19,6 +19,7 @@ type Resolver struct {
 	remoteUDPResolver *net.Resolver
 	remoteTCPResolver *net.Resolver
 	secondaryResolver *net.Resolver
+	isolatedResolver  *dohResolver
 	ttl               uint64
 	domainResources   map[string]client.DomainResource
 	dnsResource       map[string]net.IP
@@ -174,6 +175,16 @@ func (r *Resolver) RemoteTCPResolver() (*net.Resolver, error) {
 }
 
 func (r *Resolver) ResolveWithSecondaryDNS(ctx context.Context, host string) (context.Context, net.IP, error) {
+	if r.isolatedResolver != nil {
+		targets, err := r.isolatedResolver.LookupIPv4(ctx, host)
+		if err != nil {
+			log.Printf("Resolve IPv4 addr failed using isolated DoH: %s: %v", host, err)
+			return ctx, nil, err
+		}
+		log.Printf("%s -> %s (isolated DoH)", host, targets[0].String())
+		return ctx, targets[0], nil
+	}
+
 	if targets, err := r.secondaryResolver.LookupIP(ctx, "ip4", host); err != nil {
 		log.Printf("Resolve IPv4 addr failed using secondary DNS: %s. Try IPv6 addr", host)
 
@@ -197,12 +208,14 @@ func (r *Resolver) Close() {
 			r.timer.Stop()
 			r.timer = nil
 		}
+		if r.isolatedResolver != nil {
+			r.isolatedResolver.client.CloseIdleConnections()
+		}
 		r.tcpLock.Unlock()
 	})
 }
 
-
-func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, ttl uint64, domainResources map[string]client.DomainResource, dnsResource map[string]net.IP, useRemoteDNS bool) *Resolver {
+func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, ttl uint64, domainResources map[string]client.DomainResource, dnsResource map[string]net.IP, useRemoteDNS, isolatedDNS bool) *Resolver {
 	//domainSuffixTree := domainsuffixtrie.NewDomainSuffixTrie[bool]()
 	//for domain := range domainResource {
 	//	_ = domainSuffixTree.AddDomainSuffix(domain, true)
@@ -227,11 +240,14 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 				})
 			},
 		},
-		ttl:              ttl,
-		domainResources:  domainResources,
-		dnsResource:      dnsResource,
-		dnsCache:         cache.New(time.Duration(ttl)*time.Second, time.Duration(ttl)*2*time.Second),
-		useRemoteDNS: useRemoteDNS,
+		ttl:             ttl,
+		domainResources: domainResources,
+		dnsResource:     dnsResource,
+		dnsCache:        cache.New(time.Duration(ttl)*time.Second, time.Duration(ttl)*2*time.Second),
+		useRemoteDNS:    useRemoteDNS,
+	}
+	if isolatedDNS {
+		resolver.isolatedResolver = newDoHResolver()
 	}
 
 	if secondaryDNSServer != "" {

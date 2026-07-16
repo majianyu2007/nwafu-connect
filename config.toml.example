@@ -8,6 +8,12 @@ socks_bind = ":1080"
 socks_user = ""
 socks_passwd = ""
 http_bind = ":1081"
+
+# Managed browser mode (Windows/macOS/Linux). Uses an isolated Chromium profile
+# and a private loopback proxy; configured proxy listeners are not started.
+browser_mode = false
+browser_path = "" # Auto-detect Chrome, Edge, Chromium, or Brave when empty.
+browser_url = "" # Empty shows a home page generated from server-issued resources.
 shadowsocks_url = "" # "ss://aes-128-gcm:password@:1082"
 dial_direct_proxy = "" # "http://127.0.0.1:7890" or "socks://127.0.0.1:7890"
 tcp_tunnel_mode = false

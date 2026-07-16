@@ -49,8 +49,11 @@ func IsInitial() bool {
 
 func checkBindPortLegal(ctx context.Context, config configs.Config) error {
 	var checkTCPPorts, checkUDPPorts []uint32
-	checkTCPPortsStr := []string{config.HTTPBind, config.SocksBind}
-	checkUDPPortsStr := []string{config.DNSServerBind}
+	var checkTCPPortsStr, checkUDPPortsStr []string
+	if !config.BrowserMode {
+		checkTCPPortsStr = []string{config.HTTPBind, config.SocksBind}
+		checkUDPPortsStr = []string{config.DNSServerBind}
+	}
 
 	for _, addrStr := range checkTCPPortsStr {
 		if len(addrStr) != 0 {

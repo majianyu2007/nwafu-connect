@@ -115,6 +115,28 @@ HTTP server listening on :1081
 SOCKS5 server listening on :1080
 ```
 
+## 受管浏览器模式
+
+如果只需要浏览校内网页，可以启用受管浏览器模式，无需手工配置 SOCKS5、系统代理、TUN 路由或额外分流规则：
+
+```toml
+browser_mode = true
+browser_url = "" # 留空时显示本次 aTrust 登录动态下发的校内资源首页
+browser_path = "" # 留空时自动发现 Chrome、Edge、Chromium 或 Brave
+```
+
+运行 `nwafu-connect -config config.toml` 后：
+
+1. 客户端先完成 aTrust 登录并读取服务端下发的资源规则。
+2. 在 `127.0.0.1` 的随机端口启动仅供本次浏览器使用的 HTTP CONNECT 代理。
+3. 使用临时独立 profile 启动 Chromium 系浏览器；不会修改系统代理，也不会复用或污染日常浏览器数据。
+4. 浏览器的 HTTP/HTTPS 请求全部进入私有代理；只有 aTrust 网关授权的 IP/域名资源才会进入 VPN，未授权目标会在客户端拒绝，绝不回退到本机直连或本机代理。网关未下发 DNS 时，浏览器模式使用不依赖系统解析器的加密 DoH，避免 Clash/FlClash Fake-IP 污染。QUIC 和未代理的 WebRTC UDP 会被关闭，防止绕过。
+5. 关闭最后一个受管浏览器窗口后，临时 profile 被删除，代理、resolver、隧道和 aTrust 会话按顺序关闭。
+
+浏览器模式不会启动配置中的公共 SOCKS5、HTTP、DNS、Shadowsocks 或端口转发监听。默认首页按应用展示本次 aTrust 登录下发的资源名称、说明、全部地址、协议和端口；`browser_url` 仅用于可选的自定义启动页，不是授权或路由规则。
+
+当前轻量实现支持 Windows、macOS 和 Linux，复用系统已有的 Chrome、Edge、Chromium 或 Brave，因此不会把数百 MB 的 Chromium 内核打进每个发布包。Windows 通常可直接使用系统 Edge；其他平台找不到浏览器时可用 `browser_path` 指定可执行文件。Android/iOS 需要独立应用壳和平台 WebView，目前不在此桌面实现内。
+
 运行：
 
 ```bash

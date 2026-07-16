@@ -29,11 +29,25 @@ type DomainResource struct {
 	NodeGroupID string
 }
 
+type ResourceAddress struct {
+	Host     string
+	PortMin  int
+	PortMax  int
+	Protocol string
+}
+
+type Resource struct {
+	Name        string
+	Description string
+	Addresses   []ResourceAddress
+}
+
 type Client interface {
 	IP() (net.IP, error)
 	IPSet() (*netaddr.IPSet, error)
 	IPResources() ([]IPResource, error)
 	DomainResources() (map[string]DomainResource, error)
+	Resources() ([]Resource, error)
 	DNSResource() (map[string]net.IP, error)
 	DNSServer() (string, error)
 

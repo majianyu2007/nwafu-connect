@@ -16,6 +16,7 @@ import (
 	"github.com/majianyu2007/nwafu-connect/configs"
 	"github.com/majianyu2007/nwafu-connect/dial"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/internal/managedbrowser"
 	"github.com/majianyu2007/nwafu-connect/log"
 	"github.com/majianyu2007/nwafu-connect/resolve"
 	"github.com/majianyu2007/nwafu-connect/service"
@@ -37,6 +38,13 @@ func main() {
 	}
 	if conf.DebugDump {
 		log.EnableDebug()
+	}
+	if conf.BrowserMode {
+		browserPath, err := managedbrowser.FindExecutable(conf.BrowserPath)
+		if err != nil {
+			log.Fatalf("Managed browser setup error: %s", err)
+		}
+		conf.BrowserPath = browserPath
 	}
 
 	if errs := hook_func.ExecInitialFunc(context.Background(), conf); errs != nil {
@@ -124,6 +132,11 @@ func main() {
 		log.Println("No domain resources")
 	}
 
+	resources, err := vpnClient.Resources()
+	if err != nil {
+		log.Println("No resource metadata")
+	}
+
 	dnsResource, err := vpnClient.DNSResource()
 	if err != nil {
 		log.Println("No DNS resource")
@@ -135,7 +148,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("TCP Tunnel stack setup error: %s", err)
 		}
-	} else if conf.TUNMode {
+	} else if conf.TUNMode && !conf.BrowserMode {
 		vpnTUNStack, err := tun.NewStack(vpnClient, conf.DNSHijack, conf.FakeIP, ipResources)
 		if err != nil {
 			log.Fatalf("Tun stack setup error, make sure you are root user : %s", err)
@@ -181,6 +194,7 @@ func main() {
 		domainResources,
 		dnsResource,
 		useRemoteDNS,
+		conf.BrowserMode,
 	)
 	hook_func.RegisterTerminalFunc("CloseResolver", func(ctx context.Context) error {
 		vpnResolver.Close()
@@ -201,36 +215,92 @@ func main() {
 
 	go vpnStack.Run()
 
-	vpnDialer := dial.NewDialer(vpnStack, vpnResolver, ipResources, false, conf.DialDirectProxy)
+	vpnDialer := dial.NewDialer(vpnStack, vpnResolver, ipResources, conf.BrowserMode, conf.DialDirectProxy)
 
-	if conf.DNSServerBind != "" {
-		go service.ServeDNS(conf.DNSServerBind, localResolver)
-	}
-	if conf.TUNMode {
-		clientIP, _ := vpnClient.IP()
-		go service.ServeDNS(clientIP.String()+":53", localResolver)
-	}
-
-	if conf.SocksBind != "" {
-		go service.ServeSocks5(conf.SocksBind, vpnDialer, vpnResolver, conf.SocksUser, conf.SocksPasswd)
-	}
-
-	if conf.HTTPBind != "" {
-		go service.ServeHTTP(conf.HTTPBind, vpnDialer)
-	}
-
-	if conf.ShadowsocksURL != "" {
-		go service.ServeShadowsocks(vpnDialer, conf.ShadowsocksURL)
-	}
-
-	for _, portForwarding := range conf.PortForwardingList {
-		switch portForwarding.NetworkType {
-		case "tcp":
-			go service.ServeTCPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
-		case "udp":
-			go service.ServeUDPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
-		default:
-			log.Printf("Port forwarding: unknown network type %s. Aborting", portForwarding.NetworkType)
+	var browserDone <-chan error
+	if conf.BrowserMode {
+		proxyAddress, err := service.StartHTTP("127.0.0.1:0", vpnDialer)
+		if err != nil {
+			log.Printf("Managed browser proxy setup error: %s", err)
+			_ = hook_func.ExecTerminalFunc(context.Background())
+			return
+		}
+		startURL := conf.BrowserURL
+		if startURL == "" {
+			startURL, err = service.StartBrowserHome(resources, proxyAddress)
+			if err != nil {
+				log.Printf("Managed browser home page setup error: %s", err)
+				_ = hook_func.ExecTerminalFunc(context.Background())
+				return
+			}
+		}
+		browserContext, closeBrowser := context.WithCancel(context.Background())
+		browserProcess, err := managedbrowser.Start(browserContext, managedbrowser.Options{
+			Executable:   conf.BrowserPath,
+			ProxyAddress: proxyAddress,
+			StartURL:     startURL,
+			ProfileDir:   conf.BrowserProfileDir,
+		})
+		if err != nil {
+			closeBrowser()
+			log.Printf("Managed browser setup error: %s", err)
+			_ = hook_func.ExecTerminalFunc(context.Background())
+			return
+		}
+		hook_func.RegisterTerminalFunc("CloseManagedBrowser", func(ctx context.Context) error {
+			closeBrowser()
+			return nil
+		})
+		if conf.BrowserStateFile != "" {
+			if err := managedbrowser.WriteState(conf.BrowserStateFile, managedbrowser.State{
+				ProxyAddress: proxyAddress,
+				StartURL:     startURL,
+				Executable:   browserProcess.Executable(),
+				ProfileDir:   conf.BrowserProfileDir,
+			}); err != nil {
+				closeBrowser()
+				log.Printf("Managed browser state setup error: %s", err)
+				_ = hook_func.ExecTerminalFunc(context.Background())
+				return
+			}
+			hook_func.RegisterTerminalFunc("RemoveBrowserState", func(ctx context.Context) error {
+				return managedbrowser.RemoveState(conf.BrowserStateFile)
+			})
+		}
+		log.Printf("Managed browser started with %s", browserProcess.Executable())
+		done := make(chan error, 1)
+		go func() {
+			done <- browserProcess.Wait()
+		}()
+		browserDone = done
+	} else {
+		if conf.DNSServerBind != "" {
+			go service.ServeDNS(conf.DNSServerBind, localResolver)
+		}
+		if conf.TUNMode {
+			clientIP, _ := vpnClient.IP()
+			go service.ServeDNS(clientIP.String()+":53", localResolver)
+		}
+		if conf.SocksBind != "" {
+			go service.ServeSocks5(conf.SocksBind, vpnDialer, vpnResolver, conf.SocksUser, conf.SocksPasswd)
+		}
+		if conf.HTTPBind != "" {
+			if _, err := service.StartHTTP(conf.HTTPBind, vpnDialer); err != nil {
+				log.Fatalf("HTTP server setup error: %s", err)
+			}
+		}
+		if conf.ShadowsocksURL != "" {
+			go service.ServeShadowsocks(vpnDialer, conf.ShadowsocksURL)
+		}
+		for _, portForwarding := range conf.PortForwardingList {
+			switch portForwarding.NetworkType {
+			case "tcp":
+				go service.ServeTCPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
+			case "udp":
+				go service.ServeUDPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
+			default:
+				log.Printf("Port forwarding: unknown network type %s. Aborting", portForwarding.NetworkType)
+			}
 		}
 	}
 
@@ -247,16 +317,36 @@ func main() {
 		}
 	}
 
+	quit := make(chan os.Signal, 1)
 	if runtime.GOOS == "windows" {
-		done := make(chan os.Signal, 1)
-		signal.Notify(done, syscall.SIGINT)
-		winquit.SimulateSigTermOnQuit(done)
-		<-done
+		signal.Notify(quit, syscall.SIGINT)
+		winquit.SimulateSigTermOnQuit(quit)
 	} else {
-		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-		<-quit
 	}
+	if browserDone == nil || conf.BrowserStayRunning {
+		if browserDone != nil {
+			go func() {
+				if err := <-browserDone; err != nil {
+					log.Printf("Managed browser error: %s", err)
+				} else {
+					log.Println("Managed browser closed; VPN session remains available from the tray")
+				}
+			}()
+		}
+		<-quit
+	} else {
+		select {
+		case <-quit:
+		case err := <-browserDone:
+			if err != nil {
+				log.Printf("Managed browser error: %s", err)
+			} else {
+				log.Println("Managed browser closed")
+			}
+		}
+	}
+	signal.Stop(quit)
 	log.Printf("Shutdown %s ......", applicationName)
 	if errs := hook_func.ExecTerminalFunc(context.Background()); errs != nil {
 		for _, err := range errs {

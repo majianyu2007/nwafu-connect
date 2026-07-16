@@ -9,10 +9,11 @@ NWAFU Connect is a Go command-line aTrust client specialized for Northwest A&F U
 1. `init.go` merges CLI flags or TOML into `configs.Config`; NWAFU defaults are `vpn.nwafu.edu.cn`, `auth/psw`, and `LDAP`.
 2. `client/atrust` authenticates, completes secondary authentication, fetches resources/nodes, and establishes the Sangfor L3 or TCP tunnel behind `client.Client`.
 3. `stack.Stack` selects `stack/gvisor` by default, `stack/tun` for an OS TUN device, or `stack/tcptunnel` for TCP-only mode.
-4. `resolve.Resolver` applies custom records, server domain/DNS resources, cache, VPN DNS, and secondary fallback.
-5. `dial.Dialer` decides VPN versus direct routing from server-issued IP/domain resources.
-6. `service` starts SOCKS5, HTTP, DNS, Shadowsocks, forwarding, and keep-alive goroutines.
-7. `internal/hook_func` performs startup checks and ordered cleanup on process signals.
+4. `resolve.Resolver` applies custom records, server domain/DNS resources, and cache. Managed browser mode uses fixed-endpoint encrypted DoH instead of the host resolver when the gateway supplies no DNS, preventing local Fake-IP contamination.
+5. `dial.Dialer` normally decides VPN versus direct routing from server-issued IP/domain resources. Managed browser mode is VPN-only: unauthorized destinations are rejected rather than falling back to the host network.
+6. `service` starts SOCKS5, HTTP, DNS, Shadowsocks, forwarding, and keep-alive goroutines. Managed browser mode instead creates one private loopback HTTP proxy and an application-grouped resource home page.
+7. `internal/managedbrowser` launches an isolated Chromium profile through that proxy; browser exit triggers normal terminal cleanup.
+8. `internal/hook_func` performs startup checks and ordered cleanup on browser exit or process signals.
 
 LDAP flow: `/passport/v1/auth/psw` → `/controller/v1/public/reportEnv` → `/passport/v1/auth/authCheck` → `auth/token` subtype `totp` → `/passport/v1/auth/token` → resource/node setup. Preserve `authId`, `taskId`, subtype mapping, CSRF headers, and routing context metadata.
 
@@ -28,6 +29,7 @@ WeCom flow: `authConfig` supplies the app, agent, redirect URI, and `state`; `au
 - `service/`: Proxy, DNS, forwarding, Shadowsocks, and keep-alive listeners.
 - `configs/`: Runtime and pointer-based TOML schemas.
 - `internal/`: Lifecycle hooks, IP pool, ping, DNS interfaces, raw packet helpers.
+- `internal/managedbrowser/`: Windows/macOS/Linux Chromium discovery, isolated profile arguments, and child-process lifecycle.
 - `docs/`: Docker and service deployment guides in Chinese and English.
 - `.github/workflows/`: Cross-platform builds and optional Docker publishing.
 
