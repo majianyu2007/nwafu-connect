@@ -12,7 +12,7 @@ Inspect the live gateway with `nwafu-connect -auth-info`:
 | --- | --- | --- |
 | LDAP account, password, and TOTP | `auth/psw` / `LDAP` | Verified with a real account |
 | Phone and SMS code | `auth/smsCheckCode` / `sms73926` | Interactive flow implemented; live phone verification pending |
-| WeCom | `auth/qywechat` / `wechat` | Browser-based QR login implemented |
+| WeCom | `auth/qywechat` / `wechat` | Full live-account flow verified (WebUI / CLI / PNG) |
 
 This repository is aTrust-only. The obsolete EasyConnect implementation and configuration have been removed.
 
@@ -29,7 +29,9 @@ cd nwafu-connect
 cp config.toml.example config.toml
 ```
 
-Minimal LDAP + TOTP configuration:
+### LDAP + TOTP
+
+Minimal configuration:
 
 ```toml
 server_address = "vpn.nwafu.edu.cn"
@@ -46,7 +48,9 @@ http_bind = "127.0.0.1:1081"
 
 `totp_secret` is the Base32 authenticator seed. After LDAP password authentication, the client generates the current token and submits it to aTrust `/passport/v1/auth/token`.
 
-Minimal phone + SMS configuration:
+### Phone + SMS code
+
+Minimal configuration:
 
 ```toml
 server_address = "vpn.nwafu.edu.cn"
@@ -63,22 +67,53 @@ disable_remote_dns = true
 
 Use `country-code-phone-number` format for `phone`, for example `86-13800138000`. After `go run . -config config.toml`, the client first calls `/passport/v1/public/sendSms`; if the gateway requires a graphical captcha, it opens an interactive page bound only to `127.0.0.1`. Enter the received code at the terminal's `Please enter the SMS verification code:` prompt. Only `VPN client started` confirms the complete SMS, ticket exchange, and resource-loading path. Keep `debug_dump` disabled and avoid repeatedly requesting SMS codes.
 
-WeCom QR login does not require a username or password:
+### WeCom QR login (WebUI / CLI / PNG)
+
+WeCom login requires no username or password. The complete live-account path—from scanning and ticket exchange through `authCheck`, resource loading, and VPN startup—has been verified.
 
 ```toml
 server_address = "vpn.nwafu.edu.cn"
 server_port = 443
 auth_type = "auth/qywechat"
 login_domain = "wechat"
+
+# All three outputs are enabled by default and can be controlled independently
 qywechat_qrcode_browser = true
 qywechat_qrcode_terminal = true
 qywechat_qrcode_file = "qywechat_qrcode.png"
+
 client_data_file = "client_data.json"
 socks_bind = "127.0.0.1:1080"
 http_bind = "127.0.0.1:1081"
 ```
 
-On startup, the client opens a temporary page bound only to `127.0.0.1`, renders the QR code in the CLI, and saves the original PNG with mode `0600` in the current directory. Control these outputs independently with `qywechat_qrcode_browser`, `qywechat_qrcode_terminal`, and `qywechat_qrcode_file`. The browser page reports waiting, confirmation, success, and failure states. The client polls WeCom, validates the callback host, path, login domain, and `state`, then exchanges it for the current aTrust ticket. The QR code expires after 60 seconds by default.
+The QR code supports three simultaneous or independent outputs:
+
+- **WebUI**: opens a temporary page bound only to `127.0.0.1`, keeps the QR code centered, and reports waiting, scanned/pending confirmation, VPN authentication, success, or failure states.
+- **CLI**: renders a compact, directly scannable QR code with ANSI half-block characters for headless environments.
+- **PNG file**: saves the original WeCom QR image to `qywechat_qrcode_file` with fixed mode `0600`; the default filename is listed in `.gitignore`.
+
+Set `qywechat_qrcode_browser` or `qywechat_qrcode_terminal` to `false` to disable that output. Set `qywechat_qrcode_file` to an empty string to disable file saving. At least one output must remain enabled.
+
+Login flow:
+
+1. Read the gateway-provided `appid`, `agentid`, `redirect_uri`, `state`, and QR timeout from `/passport/v1/public/authConfig`.
+2. Create the WeCom scan session, parse its key, and download the official PNG.
+3. Present the configured WebUI, CLI, and file outputs.
+4. Poll the `QRCODE_SCAN_NEVER`, `QRCODE_SCAN_ING`, `QRCODE_SCAN_FAIL`, and `QRCODE_SCAN_SUCC` states.
+5. After confirmation, validate the callback HTTPS host, port, path, login domain, and `state`, then exchange it through `/passport/v1/auth/qywechat` for the portal ticket.
+6. Parse the ticket from NWAFU's actual `/portal/qrcode_middle.html` redirect, then continue through `authCheck`, resource/node loading, and VPN startup.
+
+The QR code expires after 60 seconds by default. A successful live run includes:
+
+```text
+Enterprise WeChat QR code scanned; waiting for confirmation
+Perform GET /passport/v1/auth/qywechat
+Perform GET /passport/v1/auth/authCheck
+VPN client started
+HTTP server listening on :1081
+SOCKS5 server listening on :1080
+```
 
 Run the client:
 

@@ -12,7 +12,7 @@ NWAFU Connect 是面向西北农林科技大学 `vpn.nwafu.edu.cn` 的第三方 
 | --- | --- | --- |
 | LDAP（学号、密码、TOTP） | `auth/psw` / `LDAP` | 已完成真实账号验证 |
 | 手机号、短信验证码 | `auth/smsCheckCode` / `sms73926` | 已实现交互流程，待真实号码验证 |
-| 企业微信 | `auth/qywechat` / `wechat` | 已实现浏览器扫码登录 |
+| 企业微信 | `auth/qywechat` / `wechat` | 已完成真实账号全流程验证（WebUI / CLI / PNG） |
 
 本仓库只支持 aTrust。学校已经停用的 EasyConnect 实现及配置已删除。
 
@@ -29,7 +29,9 @@ cd nwafu-connect
 cp config.toml.example config.toml
 ```
 
-LDAP + TOTP 的最小配置：
+### LDAP + TOTP
+
+最小配置：
 
 ```toml
 server_address = "vpn.nwafu.edu.cn"
@@ -46,7 +48,9 @@ http_bind = "127.0.0.1:1081"
 
 `totp_secret` 是 Base32 格式的验证器密钥。程序会在 LDAP 密码认证成功后生成当前动态口令，并提交到 aTrust `/passport/v1/auth/token`。
 
-手机号 + 短信验证码的最小配置：
+### 手机号 + 短信验证码
+
+最小配置：
 
 ```toml
 server_address = "vpn.nwafu.edu.cn"
@@ -63,22 +67,53 @@ disable_remote_dns = true
 
 `phone` 使用“国家代码-手机号”格式，例如 `86-13800138000`。运行 `go run . -config config.toml` 后，客户端先调用 `/passport/v1/public/sendSms`；如果网关要求图形验证码，会打开仅监听 `127.0.0.1` 的交互页面。收到短信后，在终端的 `Please enter the SMS verification code:` 提示处输入验证码。出现 `VPN client started` 才表示短信、ticket 换取和资源获取全链路成功。测试时不要启用 `debug_dump`，也不要频繁触发短信发送。
 
-企业微信扫码登录无需填写账号和密码：
+### 企业微信扫码登录（WebUI / CLI / PNG）
+
+企业微信登录无需填写账号和密码，已使用真实账号完成从扫码、ticket 换取、`authCheck`、资源获取到 VPN 启动的全流程验证。
 
 ```toml
 server_address = "vpn.nwafu.edu.cn"
 server_port = 443
 auth_type = "auth/qywechat"
 login_domain = "wechat"
+
+# 三种展示方式默认同时启用，也可独立关闭
 qywechat_qrcode_browser = true
 qywechat_qrcode_terminal = true
 qywechat_qrcode_file = "qywechat_qrcode.png"
+
 client_data_file = "client_data.json"
 socks_bind = "127.0.0.1:1080"
 http_bind = "127.0.0.1:1081"
 ```
 
-启动后程序会打开仅监听 `127.0.0.1` 的临时页面、在 CLI 渲染二维码，并将原始 PNG 以 `0600` 权限保存到当前目录。三种输出可分别通过 `qywechat_qrcode_browser`、`qywechat_qrcode_terminal` 和 `qywechat_qrcode_file` 控制。浏览器页面会显示等待扫码、确认中、成功或失败状态。客户端轮询企业微信扫码结果，校验回调的主机、路径、登录域和 `state`，再向当前 aTrust 会话换取 ticket；二维码默认 60 秒失效。
+二维码支持三种同时或独立使用的输出：
+
+- **WebUI**：打开仅监听 `127.0.0.1` 的临时页面，二维码保持居中，并实时显示“等待扫码”“已扫码，等待确认”“正在完成 VPN 认证”“认证成功”或失败状态。
+- **CLI**：使用紧凑的 ANSI 半块字符渲染可直接扫描的二维码，适合无桌面环境。
+- **PNG 文件**：将企业微信返回的原始二维码保存到 `qywechat_qrcode_file`，文件权限固定为 `0600`；默认文件名已加入 `.gitignore`。
+
+将 `qywechat_qrcode_browser` 或 `qywechat_qrcode_terminal` 设为 `false` 可关闭对应输出；将 `qywechat_qrcode_file` 设为空字符串可禁用文件保存。至少需要启用一种输出方式。
+
+登录流程：
+
+1. 从 `/passport/v1/public/authConfig` 读取网关动态下发的 `appid`、`agentid`、`redirect_uri`、`state` 和二维码超时。
+2. 创建企业微信扫码会话，解析会话 key，并下载官方 PNG。
+3. 按配置展示 WebUI、CLI 和文件输出。
+4. 轮询企业微信的 `QRCODE_SCAN_NEVER`、`QRCODE_SCAN_ING`、`QRCODE_SCAN_FAIL`、`QRCODE_SCAN_SUCC` 状态。
+5. 扫码确认后校验回调的 HTTPS 主机、端口、路径、登录域和 `state`，再向 `/passport/v1/auth/qywechat` 换取 portal ticket。
+6. 解析 NWAFU 实际返回的 `/portal/qrcode_middle.html` ticket，继续 `authCheck`、资源/节点获取和 VPN 启动。
+
+二维码默认 60 秒失效。一次真实验证的关键日志如下：
+
+```text
+Enterprise WeChat QR code scanned; waiting for confirmation
+Perform GET /passport/v1/auth/qywechat
+Perform GET /passport/v1/auth/authCheck
+VPN client started
+HTTP server listening on :1081
+SOCKS5 server listening on :1080
+```
 
 运行：
 
