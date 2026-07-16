@@ -1,11 +1,9 @@
-version: '3'
-
 services:
-  zju-connect:
+  nwafu-connect:
     build:
       context: .
-    image: zju-connect
-    container_name: zju-connect
+    image: nwafu-connect
+    container_name: nwafu-connect
     restart: unless-stopped
     ports:
       - 1080:1080

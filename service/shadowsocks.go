@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mythologyli/zju-connect/dial"
-	"github.com/mythologyli/zju-connect/internal/hook_func"
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/dial"
+	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/log"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )

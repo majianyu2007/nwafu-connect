@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
@@ -141,21 +141,33 @@ const (
 type authServiceInfo struct {
 	AuthID   string `json:"authId"`
 	AuthType string `json:"authType"`
+	SubType  string `json:"subType"`
 }
 
 type authStepData struct {
 	NextService     string            `json:"nextService"`
 	NextServiceList []authServiceInfo `json:"nextServiceList"`
+	Subtype         string            `json:"subtype"`
+	TaskID          string            `json:"taskId"`
+	IsPrevEffect    bool              `json:"isPrevEffect"`
 }
 
 type authStep struct {
-	Service string
-	AuthID  string
-	SMSMode smsMode
+	Service      string
+	AuthID       string
+	Subtype      string
+	TaskID       string
+	IsPrevEffect bool
+	SMSMode      smsMode
 }
 
 func authStepFromData(data authStepData) authStep {
-	step := authStep{Service: data.NextService}
+	step := authStep{
+		Service:      data.NextService,
+		Subtype:      data.Subtype,
+		TaskID:       data.TaskID,
+		IsPrevEffect: data.IsPrevEffect,
+	}
 
 	var selected *authServiceInfo
 	for i := range data.NextServiceList {
@@ -174,6 +186,13 @@ func authStepFromData(data authStepData) authStep {
 		if step.Service == "" {
 			step.Service = selected.AuthType
 		}
+		if step.Subtype == "" {
+			step.Subtype = selected.SubType
+		}
+	}
+
+	if step.Service == "auth/token" && step.Subtype == "totp" {
+		step.Service = "auth/totp"
 	}
 
 	// Some older gateways omit authType and only return an authId. This was

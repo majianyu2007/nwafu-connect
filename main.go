@@ -4,9 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto"
-	"crypto/tls"
-	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -14,21 +11,18 @@ import (
 	"syscall"
 
 	"github.com/containers/winquit/pkg/winquit"
-	"github.com/mythologyli/zju-connect/client"
-	atrustclient "github.com/mythologyli/zju-connect/client/atrust"
-	easyconnectclient "github.com/mythologyli/zju-connect/client/easyconnect"
-	"github.com/mythologyli/zju-connect/configs"
-	"github.com/mythologyli/zju-connect/dial"
-	"github.com/mythologyli/zju-connect/internal/hook_func"
-	"github.com/mythologyli/zju-connect/log"
-	"github.com/mythologyli/zju-connect/resolve"
-	"github.com/mythologyli/zju-connect/service"
-	"github.com/mythologyli/zju-connect/stack"
-	"github.com/mythologyli/zju-connect/stack/gvisor"
-	"github.com/mythologyli/zju-connect/stack/tcptunnel"
-	"github.com/mythologyli/zju-connect/stack/tun"
-	"golang.org/x/crypto/pkcs12"
-	"inet.af/netaddr"
+	"github.com/majianyu2007/nwafu-connect/client"
+	atrustclient "github.com/majianyu2007/nwafu-connect/client/atrust"
+	"github.com/majianyu2007/nwafu-connect/configs"
+	"github.com/majianyu2007/nwafu-connect/dial"
+	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/log"
+	"github.com/majianyu2007/nwafu-connect/resolve"
+	"github.com/majianyu2007/nwafu-connect/service"
+	"github.com/majianyu2007/nwafu-connect/stack"
+	"github.com/majianyu2007/nwafu-connect/stack/gvisor"
+	"github.com/majianyu2007/nwafu-connect/stack/tcptunnel"
+	"github.com/majianyu2007/nwafu-connect/stack/tun"
 )
 
 var conf configs.Config
@@ -37,9 +31,9 @@ func main() {
 	log.Init()
 
 	if CommitID != "" {
-		log.Println("Start ZJU Connect v" + zjuConnectVersion + "-" + CommitID)
+		log.Println("Start " + applicationName + " v" + nwafuConnectVersion + "-" + CommitID)
 	} else {
-		log.Println("Start ZJU Connect v" + zjuConnectVersion)
+		log.Println("Start " + applicationName + " v" + nwafuConnectVersion)
 	}
 	if conf.DebugDump {
 		log.EnableDebug()
@@ -47,101 +41,61 @@ func main() {
 
 	if errs := hook_func.ExecInitialFunc(context.Background(), conf); errs != nil {
 		for _, err := range errs {
-			log.Printf("Initial ZJU-Connect failed: %s", err)
+			log.Printf("Initial %s failed: %s", applicationName, err)
 		}
 		os.Exit(1)
 	}
 
 	var vpnClient client.Client
-	switch conf.Protocol {
-	case "easyconnect":
-		tlsCert := tls.Certificate{}
-		if conf.CertFile != "" {
-			p12Data, err := os.ReadFile(conf.CertFile)
-			if err != nil {
-				log.Fatalf("Read certificate file error: %s", err)
-			}
+	var err error
+	var resourceData []byte
 
-			key, cert, err := pkcs12.Decode(p12Data, conf.CertPassword)
-			if err != nil {
-				log.Fatalf("Decode certificate file error: %s", err)
-			}
-
-			tlsCert = tls.Certificate{
-				Certificate: [][]byte{cert.Raw},
-				PrivateKey:  key.(crypto.PrivateKey),
-				Leaf:        cert,
-			}
-		}
-
-		vpnClient = easyconnectclient.NewClient(
-			conf.ServerAddress+":"+fmt.Sprintf("%d", conf.ServerPort),
-			conf.Username,
-			conf.Password,
-			conf.TOTPSecret,
-			tlsCert,
-			conf.TwfID,
-			!conf.DisableMultiLine,
-			!conf.DisableServerConfig,
-			!conf.SkipDomainResource,
-		)
-
-		log.Printf("VPN protocol: %s", conf.Protocol)
-		err := vpnClient.(*easyconnectclient.Client).Setup(conf.GraphCodeFile)
+	if conf.ResourceFile != "" {
+		resourceData, err = os.ReadFile(conf.ResourceFile)
 		if err != nil {
-			log.Fatalf("VPN client setup error: %s", err)
+			log.Fatalf("Read resource file error: %s", err)
 		}
-	case "atrust":
-		var err error
-		var resourceData []byte
+	}
 
-		if conf.ResourceFile != "" {
-			resourceData, err = os.ReadFile(conf.ResourceFile)
-			if err != nil {
-				log.Fatalf("Read resource file error: %s", err)
-			}
-		}
-
-		var clientData []byte
-		if conf.ClientDataFile != "" {
-			clientData, err = os.ReadFile(conf.ClientDataFile)
-			if err != nil {
-				log.Printf("Read client data file error: %s", err)
-				log.Println("Will create a new client data file if log in successfully")
-			}
-		}
-
-		vpnClient = atrustclient.NewClient(conf.Username, conf.SID, conf.DeviceID, conf.SignKey)
-
-		log.Printf("VPN protocol: %s", conf.Protocol)
-		clientData, err = vpnClient.(*atrustclient.Client).Setup(
-			conf.ServerAddress,
-			conf.ServerPort,
-			conf.Username,
-			conf.Password,
-			conf.Phone,
-			conf.LoginDomain,
-			conf.AuthType,
-			conf.GraphCodeFile,
-			conf.CasTicket,
-			conf.OAuth2Code,
-			clientData,
-			resourceData,
-			conf.UpdateBestNodesInterval,
-		)
+	var clientData []byte
+	if conf.ClientDataFile != "" {
+		clientData, err = os.ReadFile(conf.ClientDataFile)
 		if err != nil {
-			log.Fatalf("VPN client setup error: %s", err)
+			log.Printf("Read client data file error: %s", err)
+			log.Println("Will create a new client data file if log in successfully")
 		}
+	}
 
-		if conf.ClientDataFile != "" {
-			err = os.WriteFile(conf.ClientDataFile, clientData, 0644)
-			if err != nil {
-				log.Fatalf("Write client data file error: %s", err)
-			}
-			log.Printf("Client data saved to %s", conf.ClientDataFile)
+	vpnClient = atrustclient.NewClient(conf.Username, conf.SID, conf.DeviceID, conf.SignKey)
+
+	log.Println("VPN protocol: aTrust")
+	clientData, err = vpnClient.(*atrustclient.Client).Setup(
+		conf.ServerAddress,
+		conf.ServerPort,
+		conf.Username,
+		conf.Password,
+		conf.TOTPSecret,
+		conf.Phone,
+		conf.LoginDomain,
+		conf.AuthType,
+		conf.GraphCodeFile,
+		clientData,
+		resourceData,
+		conf.UpdateBestNodesInterval,
+	)
+	if err != nil {
+		log.Fatalf("VPN client setup error: %s", err)
+	}
+
+	if conf.ClientDataFile != "" {
+		err = os.WriteFile(conf.ClientDataFile, clientData, 0600)
+		if err != nil {
+			log.Fatalf("Write client data file error: %s", err)
 		}
-	default:
-		log.Fatalf("Unsupported VPN protocol: %s", conf.Protocol)
+		if err := os.Chmod(conf.ClientDataFile, 0600); err != nil {
+			log.Fatalf("Secure client data file error: %s", err)
+		}
+		log.Printf("Client data saved to %s", conf.ClientDataFile)
 	}
 
 	log.Printf("VPN client started")
@@ -153,74 +107,23 @@ func main() {
 	}
 
 	ipResources, err := vpnClient.IPResources()
-	if err != nil && !conf.DisableServerConfig {
+	if err != nil {
 		log.Println("No IP resources")
 	}
 
 	ipSet, err := vpnClient.IPSet()
-	if err != nil && !conf.DisableServerConfig {
+	if err != nil {
 		log.Println("No IP set")
 	}
 
 	domainResources, err := vpnClient.DomainResources()
-	if err != nil && !conf.DisableServerConfig {
+	if err != nil {
 		log.Println("No domain resources")
 	}
 
 	dnsResource, err := vpnClient.DNSResource()
-	if err != nil && !conf.DisableServerConfig {
+	if err != nil {
 		log.Println("No DNS resource")
-	}
-
-	if conf.Protocol == "easyconnect" {
-		if !conf.DisableZJUConfig {
-			if domainResources == nil {
-				domainResources = make(map[string]client.DomainResource)
-			}
-
-			domainResources["zju.edu.cn"] = client.DomainResource{
-				PortMin:  1,
-				PortMax:  65535,
-				Protocol: "all",
-			}
-
-			if ipResources == nil {
-				ipResources = []client.IPResource{}
-			}
-
-			ipResources = append([]client.IPResource{{
-				IPMin:    net.ParseIP("10.0.0.0"),
-				IPMax:    net.ParseIP("10.255.255.255"),
-				PortMin:  1,
-				PortMax:  65535,
-				Protocol: "all",
-			}}, ipResources...)
-
-			ipSetBuilder := netaddr.IPSetBuilder{}
-			if ipSet != nil {
-				ipSetBuilder.AddSet(ipSet)
-			}
-			ipSetBuilder.AddPrefix(netaddr.MustParseIPPrefix("10.0.0.0/8"))
-			ipSet, _ = ipSetBuilder.IPSet()
-		}
-
-		for _, customProxyDomain := range conf.CustomProxyDomain {
-			if domainResources != nil {
-				domainResources[customProxyDomain] = client.DomainResource{
-					PortMin:  1,
-					PortMax:  65535,
-					Protocol: "all",
-				}
-			} else {
-				domainResources = map[string]client.DomainResource{
-					customProxyDomain: {
-						PortMin:  1,
-						PortMax:  65535,
-						Protocol: "all",
-					},
-				}
-			}
-		}
 	}
 
 	var vpnStack stack.Stack
@@ -240,9 +143,6 @@ func main() {
 				log.Printf("Add route to %s", prefix.String())
 				_ = vpnTUNStack.AddRoute(prefix.String())
 			}
-		} else if !conf.AddRoute && !conf.DisableZJUConfig && conf.Protocol == "easyconnect" {
-			log.Println("Add route to 10.0.0.0/8")
-			_ = vpnTUNStack.AddRoute("10.0.0.0/8")
 		}
 
 		if conf.FakeIP {
@@ -298,10 +198,7 @@ func main() {
 
 	go vpnStack.Run()
 
-	if conf.Protocol == "atrust" {
-		conf.ProxyAll = false
-	}
-	vpnDialer := dial.NewDialer(vpnStack, vpnResolver, ipResources, conf.ProxyAll, conf.DialDirectProxy)
+	vpnDialer := dial.NewDialer(vpnStack, vpnResolver, ipResources, false, conf.DialDirectProxy)
 
 	if conf.DNSServerBind != "" {
 		go service.ServeDNS(conf.DNSServerBind, localResolver)
@@ -357,12 +254,12 @@ func main() {
 		signal.Notify(quit, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		<-quit
 	}
-	log.Println("Shutdown ZJU-Connect ......")
+	log.Printf("Shutdown %s ......", applicationName)
 	if errs := hook_func.ExecTerminalFunc(context.Background()); errs != nil {
 		for _, err := range errs {
-			log.Printf("Shutdown ZJU-Connect failed: %s", err)
+			log.Printf("Shutdown %s failed: %s", applicationName, err)
 		}
 	} else {
-		log.Println("Shutdown ZJU-Connect success, Bye~")
+		log.Printf("Shutdown %s success, Bye~", applicationName)
 	}
 }

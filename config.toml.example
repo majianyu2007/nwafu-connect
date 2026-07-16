@@ -1,10 +1,9 @@
-protocol = "easyconnect" # "easyconnect" or "atrust"
-server_address = "rvpn.zju.edu.cn"
+server_address = "vpn.nwafu.edu.cn"
 server_port = 443
-username = "username"
+username = "student_id"
 password = "password"
-disable_zju_config = false
-disable_zju_dns = false
+totp_secret = "" # Base32 secret for LDAP secondary TOTP authentication
+disable_remote_dns = false
 socks_bind = ":1080"
 socks_user = ""
 socks_passwd = ""
@@ -17,7 +16,7 @@ add_route = false
 dns_ttl = 3600
 disable_keep_alive = false
 keep_alive_url = "" # "https://www.cnki.net/favicon.ico"
-zju_dns_server = "auto"
+remote_dns_server = "auto"
 secondary_dns_server = "114.114.114.114"
 dns_server_bind = ""
 dns_hijack = false
@@ -32,32 +31,15 @@ port_forwarding = [
 ]
 
 custom_dns = [
-#    { host_name = "appservice.zju.edu.cn", ip = "10.203.8.198"},
-#    { host_name = "www.cc98.org", ip = "10.10.98.98"}
+#    { host_name = "library.nwafu.edu.cn", ip = "10.0.0.10"}
+#    { host_name = "example.nwafu.edu.cn", ip = "10.0.0.11"}
 ]
 
-
-# EasyConnect specific settings
-totp_secret = ""
-cert_file = ""
-cert_password = ""
-disable_server_config = false
-skip_domain_resource = false
-disable_multi_line = false
-proxy_all = false
-custom_proxy_domain = [
-#    "science.org",
-#    "nature.com"
-]
-
-
-# aTrust specific settings
-auth_type = "auth/psw"
-login_domain = "Radius"
+# aTrust authentication settings
+auth_type = "auth/psw" # LDAP: auth/psw; SMS: auth/smsCheckCode
+login_domain = "LDAP" # SMS uses sms73926; enterprise WeChat is not a headless credential flow
 client_data_file = "client_data.json"
 graph_code_file = "" # Optional: captcha image will open in browser if this left empty. If set, the program will save the captcha image to this file and ask user to input the code in terminal.
-cas_ticket = ""
-oauth2_code = ""
 phone = ""
 update_best_nodes_interval = 300
 sid = ""

@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 type SMSLogin struct {

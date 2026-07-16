@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 type CASLogin struct {

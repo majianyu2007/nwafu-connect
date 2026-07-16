@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/mythologyli/zju-connect/configs"
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/configs"
+	"github.com/majianyu2007/nwafu-connect/log"
 	netstat "github.com/shirou/gopsutil/v4/net"
 )
 

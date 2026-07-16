@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/mythologyli/zju-connect/dial"
-	"github.com/mythologyli/zju-connect/internal/hook_func"
-	"github.com/mythologyli/zju-connect/log"
-	"github.com/mythologyli/zju-connect/resolve"
+	"github.com/majianyu2007/nwafu-connect/dial"
+	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/log"
+	"github.com/majianyu2007/nwafu-connect/resolve"
 	"github.com/things-go/go-socks5"
 )
 

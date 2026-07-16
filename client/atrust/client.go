@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mythologyli/zju-connect/client"
-	"github.com/mythologyli/zju-connect/client/atrust/auth"
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/client/atrust/auth"
+	"github.com/majianyu2007/nwafu-connect/log"
 	"inet.af/netaddr"
 )
 
@@ -202,7 +202,7 @@ func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted b
 	}
 }
 
-func (c *Client) Setup(serverAddress string, serverPort int, username, password, phone, loginDomain, authType, graphCodeFile, casTicket, oauth2Code string, authData, resourceData []byte, updateBestNodesInterval int) ([]byte, error) {
+func (c *Client) Setup(serverAddress string, serverPort int, username, password, totpSecret, phone, loginDomain, authType, graphCodeFile string, authData, resourceData []byte, updateBestNodesInterval int) ([]byte, error) {
 	c.serverAddress = serverAddress
 
 	if c.SID != "" && c.DeviceID != "" && resourceData != nil {
@@ -248,16 +248,6 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 				Domain:        loginDomain,
 				GraphCodeFile: graphCodeFile,
 			}
-		case "auth/cas":
-			loginMethod = auth.CASLogin{
-				Domain: loginDomain,
-				Ticket: casTicket,
-			}
-		case "auth/httpsOauth2":
-			loginMethod = auth.HTTPSOauth2Login{
-				Domain: loginDomain,
-				Code:   oauth2Code,
-			}
 		case "auth/smsCheckCode":
 			loginMethod = auth.SMSLogin{
 				Phone:         phone,
@@ -271,8 +261,9 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 		}
 
 		loginResult, err := sess.Login(loginMethod, auth.LoginOptions{
-			DeviceID: c.DeviceID,
-			Cookies:  clientAuthData.Cookies,
+			DeviceID:   c.DeviceID,
+			Cookies:    clientAuthData.Cookies,
+			TOTPSecret: totpSecret,
 		})
 		if err != nil {
 			log.Println("Login error:", err)

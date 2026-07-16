@@ -6,9 +6,9 @@ import (
 	"net"
 
 	"github.com/miekg/dns"
-	"github.com/mythologyli/zju-connect/internal/hook_func"
-	"github.com/mythologyli/zju-connect/log"
-	"github.com/mythologyli/zju-connect/resolve"
+	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/log"
+	"github.com/majianyu2007/nwafu-connect/resolve"
 )
 
 type DNSServer struct {

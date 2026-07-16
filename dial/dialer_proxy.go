@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/log"
 	"github.com/things-go/go-socks5/statute"
 )
 

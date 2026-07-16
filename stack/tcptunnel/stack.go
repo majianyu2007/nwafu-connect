@@ -1,9 +1,9 @@
 package tcptunnel
 
 import (
-	"github.com/mythologyli/zju-connect/client"
-	"github.com/mythologyli/zju-connect/internal/ippool"
-	"github.com/mythologyli/zju-connect/internal/zcdns"
+	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/internal/ippool"
+	"github.com/majianyu2007/nwafu-connect/internal/zcdns"
 )
 
 type Stack struct {

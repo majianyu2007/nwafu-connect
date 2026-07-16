@@ -21,5 +21,6 @@
 go.work
 .idea/
 
-# Config file
+# Local credentials and aTrust session state
 config.toml
+client_data.json

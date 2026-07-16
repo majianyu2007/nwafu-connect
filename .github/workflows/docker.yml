@@ -15,6 +15,7 @@ permissions: write-all
 
 jobs:
   build:
+    if: vars.DOCKER_IMAGE != ''
     runs-on: ubuntu-latest
 
     steps:
@@ -42,8 +43,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v3
         with:
-          images: |
-            mythologyli/zju-connect
+          images: ${{ vars.DOCKER_IMAGE }}
           tags: |
             type=schedule
             type=ref,event=branch

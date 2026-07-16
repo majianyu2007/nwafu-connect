@@ -1,107 +1,48 @@
-## Run in Docker
+# Docker deployment
 
-```shell
-docker run -d --name zju-connect -v $PWD/config.toml:/home/nonroot/config.toml -p 1080:1080 -p 1081:1081 --restart unless-stopped mythologyli/zju-connect
+The repository builds locally by default and is not tied to an upstream image registry:
+
+```bash
+cp config.toml.example config.toml
+# Fill in the LDAP account, password, and totp_secret
+docker compose up --build -d
 ```
 
-You can also use Docker Compose. Create `docker-compose.yml` file with the following content:
+`docker-compose.yml` builds and runs `nwafu-connect`, mounts `./config.toml` at `/home/nonroot/config.toml`, exposes SOCKS5 on `1080` and HTTP on `1081`, and restarts the container after an exit.
+
+View logs:
+
+```bash
+docker compose logs -f nwafu-connect
+```
+
+Stop the deployment:
+
+```bash
+docker compose down
+```
+
+## Persisting the aTrust session
+
+With this configuration:
+
+```toml
+client_data_file = "/home/nonroot/data/client_data.json"
+```
+
+add a persistent volume:
 
 ```yaml
 services:
-   zju-connect:
-      image: mythologyli/zju-connect
-      container_name: zju-connect
-      restart: unless-stopped
-      ports:
-         - 1080:1080
-         - 1081:1081
-      volumes:
-         - ./config.toml:/home/nonroot/config.toml
-```
+  nwafu-connect:
+    volumes:
+      - ./config.toml:/home/nonroot/config.toml:ro
+      - nwafu-connect-data:/home/nonroot/data
 
-Additionally, you can also use [configs top-level elements](https://docs.docker.com/compose/compose-file/08-configs/) to directly write the configuration files of zju-connect into docker-compose.yml, as shown below:
-
-```yaml
-services:
-   zju-connect:
-      container_name: zju-connect
-      image: mythologyli/zju-connect
-      restart: unless-stopped
-      ports: [1080:1080, 1081:1081]
-      configs: [{ source: zju-connect-config, target: /home/nonroot/config.toml }]
-
-configs:
-   zju-connect-config:
-      content: |
-         username = ""
-         password = ""
-         # other configs ...
-```
-
-And run the following command in the same directory:
-
-```shell
-docker compose up -d
-```
-
-### aTrust Protocol Login and Data Persistence
-
-The aTrust protocol client needs to persist login credentials (`client_data.json`) inside the container. The following example saves credentials to a Docker volume:
-
-```yaml
-services:
-   zju-connect:
-      container_name: zju-connect
-      image: mythologyli/zju-connect
-      restart: unless-stopped
-      ports:
-         - 1080:1080
-         - 1081:1081
-      configs:
-         - source: zju-connect-config
-           target: /home/nonroot/config.toml
-      volumes:
-         - zju-connect-data:/home/nonroot/data
-configs:
-   zju-connect-config:
-      content: |
-         username = ""
-         password = ""
-         client_data_file = "/home/nonroot/data/client_data.json"
-         # other configs ...
 volumes:
-   zju-connect-data:
+  nwafu-connect-data:
 ```
 
-When first logging in with the aTrust protocol, human verification is required. Use `network_mode: host` and run in interactive mode temporarily:
+`config.toml` contains the password and TOTP seed; `client_data.json` contains session cookies. Never commit or share either file. Set the host configuration to mode `0600`.
 
-```shell
-docker compose run --rm -it zju-connect
-```
-
-**1. Graphical Captcha**
-
-The program starts a temporary HTTP server to display the captcha. The port is randomly assigned by the system. Check the logs for the actual address:
-
-```
-2026/03/25 09:10:46 Captcha server started at http://127.0.0.1:40855
-2026/03/25 09:10:46 Failed to open browser: exec: "xdg-open": executable file not found in $PATH. Please visit: http://127.0.0.1:40855
-```
-
-After completing the captcha, the program will prompt for SMS verification:
-
-**2. SMS Verification Code**
-
-```
-2026/03/25 09:10:57 SMS message sent successfully: 验证码已发送到您的手机：***, 请查收！
-zju-connect-1  | 2026/03/25 09:11:50 Please enter the SMS verification code:
-```
-
-Enter the SMS code from your phone and press Enter. Upon successful login, you will see:
-
-```
-2026/03/25 09:12:12 Client data saved to /home/nonroot/data/client_data.json
-2026/03/25 09:12:12 VPN client started
-```
-
-After successful login, press `Ctrl+C` to exit the container. You can then use `docker compose up -d` normally. The login state is persisted in the Docker volume and no further verification is needed.
+`.github/workflows/docker.yml` only pushes when the repository variable `DOCKER_IMAGE` is configured, preventing accidental publication to the upstream project's namespace.

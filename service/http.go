@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mythologyli/zju-connect/dial"
-	"github.com/mythologyli/zju-connect/internal/hook_func"
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/dial"
+	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 // The MIT License (MIT)

@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 const (
@@ -497,8 +497,8 @@ func buildAuthRequest(info clientInfo, signKey []byte, meta packetMeta, ct *conn
 }
 
 func defaultEnv(info clientInfo) *trustEnv {
-	procPath := "/usr/bin/zju-connect"
-	procName := "zju-connect"
+	procPath := "/usr/bin/nwafu-connect"
+	procName := "nwafu-connect"
 	fingerprint := fmt.Sprintf("%X", sha256.Sum256([]byte(procPath)))
 	platform := strings.Title(runtime.GOOS)
 	if platform == "Darwin" {

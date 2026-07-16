@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"os/user"
 	"strings"
 
-	"github.com/mythologyli/zju-connect/configs"
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/configs"
+	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 // get all services and skip element contains "*"
@@ -65,12 +64,6 @@ func SetDNSServerWithHook(service, dns string) error {
 }
 
 func init() {
-	RegisterInitialFunc("clean resolver file", func(ctx context.Context, config configs.Config) error {
-		// discard error
-		_ = os.Remove("/etc/resolver/zju.edu.cn")
-		_ = os.Remove("/etc/resolver/cc98.org")
-		return nil
-	})
 	RegisterInitialFunc("check tun mode cap", func(ctx context.Context, config configs.Config) error {
 		// discard error
 		if config.TUNMode {

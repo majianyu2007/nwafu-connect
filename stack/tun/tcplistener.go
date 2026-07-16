@@ -8,9 +8,9 @@ import (
 	"io"
 	"net"
 
-	"github.com/mythologyli/zju-connect/internal/hook_func"
-	"github.com/mythologyli/zju-connect/log"
-	"github.com/mythologyli/zju-connect/resolve"
+	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/log"
+	"github.com/majianyu2007/nwafu-connect/resolve"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"

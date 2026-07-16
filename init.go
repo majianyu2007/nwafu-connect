@@ -2,23 +2,27 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/mythologyli/zju-connect/client/atrust"
-	"github.com/mythologyli/zju-connect/configs"
+	"github.com/majianyu2007/nwafu-connect/client/atrust"
+	"github.com/majianyu2007/nwafu-connect/configs"
 )
 
 var CommitID string
 
-const zjuConnectVersion = "1.2.0"
+const (
+	applicationName      = "NWAFU Connect"
+	nwafuConnectVersion  = "1.2.0"
+	defaultServerAddress = "vpn.nwafu.edu.cn"
+	defaultAuthType      = "auth/psw"
+	defaultLoginDomain   = "LDAP"
+)
 
 func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 	if valPointer == nil {
@@ -33,23 +37,15 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 
 	_, err := toml.DecodeFile(configFile, &confTOML)
 	if err != nil {
-		return errors.New("ZJU Connect: error parsing the config file")
+		return fmt.Errorf("%s: error parsing the config file", applicationName)
 	}
 
-	conf.Protocol = getTOMLVal(confTOML.Protocol, "easyconnect")
-	conf.ServerAddress = getTOMLVal(confTOML.ServerAddress, "rvpn.zju.edu.cn")
+	conf.ServerAddress = getTOMLVal(confTOML.ServerAddress, defaultServerAddress)
 	conf.ServerPort = getTOMLVal(confTOML.ServerPort, 443)
 	conf.Username = getTOMLVal(confTOML.Username, "")
 	conf.Password = getTOMLVal(confTOML.Password, "")
 	conf.TOTPSecret = getTOMLVal(confTOML.TOTPSecret, "")
-	conf.CertFile = getTOMLVal(confTOML.CertFile, "")
-	conf.CertPassword = getTOMLVal(confTOML.CertPassword, "")
-	conf.DisableServerConfig = getTOMLVal(confTOML.DisableServerConfig, false)
-	conf.SkipDomainResource = getTOMLVal(confTOML.SkipDomainResource, false)
-	conf.DisableZJUConfig = getTOMLVal(confTOML.DisableZJUConfig, false)
 	conf.DisableRemoteDNS = getTOMLVal(confTOML.DisableRemoteDNS, false)
-	conf.DisableMultiLine = getTOMLVal(confTOML.DisableMultiLine, false)
-	conf.ProxyAll = getTOMLVal(confTOML.ProxyAll, false)
 	conf.SocksBind = getTOMLVal(confTOML.SocksBind, ":1080")
 	conf.SocksUser = getTOMLVal(confTOML.SocksUser, "")
 	conf.SocksPasswd = getTOMLVal(confTOML.SocksPasswd, "")
@@ -69,12 +65,10 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 	conf.DNSHijack = getTOMLVal(confTOML.DNSHijack, false)
 	conf.FakeIP = getTOMLVal(confTOML.FakeIP, false)
 	conf.GraphCodeFile = getTOMLVal(confTOML.GraphCodeFile, "")
-	conf.AuthType = getTOMLVal(confTOML.AuthType, "")
+	conf.AuthType = getTOMLVal(confTOML.AuthType, defaultAuthType)
 	conf.Phone = getTOMLVal(confTOML.Phone, "")
-	conf.LoginDomain = getTOMLVal(confTOML.LoginDomain, "Radius")
+	conf.LoginDomain = getTOMLVal(confTOML.LoginDomain, defaultLoginDomain)
 	conf.ClientDataFile = getTOMLVal(confTOML.ClientDataFile, "")
-	conf.CasTicket = getTOMLVal(confTOML.CasTicket, "")
-	conf.OAuth2Code = getTOMLVal(confTOML.OAuth2Code, "")
 	conf.SID = getTOMLVal(confTOML.SID, "")
 	conf.DeviceID = getTOMLVal(confTOML.DeviceID, "")
 	conf.SignKey = getTOMLVal(confTOML.SignKey, "")
@@ -83,15 +77,15 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 
 	for _, singlePortForwarding := range confTOML.PortForwarding {
 		if singlePortForwarding.NetworkType == nil {
-			return errors.New("ZJU Connect: network type is not set")
+			return fmt.Errorf("%s: network type is not set", applicationName)
 		}
 
 		if singlePortForwarding.BindAddress == nil {
-			return errors.New("ZJU Connect: bind address is not set")
+			return fmt.Errorf("%s: bind address is not set", applicationName)
 		}
 
 		if singlePortForwarding.RemoteAddress == nil {
-			return errors.New("ZJU Connect: remote address is not set")
+			return fmt.Errorf("%s: remote address is not set", applicationName)
 		}
 
 		conf.PortForwardingList = append(conf.PortForwardingList, configs.SinglePortForwarding{
@@ -103,12 +97,11 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 
 	for _, singleCustomDns := range confTOML.CustomDNS {
 		if singleCustomDns.HostName == nil {
-			return errors.New("ZJU Connect: host name is not set")
+			return fmt.Errorf("%s: host name is not set", applicationName)
 		}
 
 		if singleCustomDns.IP == nil {
-			fmt.Println("ZJU Connect: IP is not set")
-			return errors.New("ZJU Connect: IP is not set")
+			return fmt.Errorf("%s: IP is not set", applicationName)
 		}
 
 		conf.CustomDNSList = append(conf.CustomDNSList, configs.SingleCustomDNS{
@@ -117,65 +110,45 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 		})
 	}
 
-	for _, singleCustomProxyDomain := range confTOML.CustomProxyDomain {
-		var domainRegex = regexp.MustCompile(`^[a-zA-Z\d-]+(\.[a-zA-Z\d-]+)*\.[a-zA-Z]{2,}$`)
-		if !domainRegex.MatchString(singleCustomProxyDomain) {
-			fmt.Printf("ZJU Connect: %s is not a valid domain\n", singleCustomProxyDomain)
-			return fmt.Errorf("ZJU Connect: %s is not a valid domain", singleCustomProxyDomain)
-		}
-		conf.CustomProxyDomain = append(conf.CustomProxyDomain, singleCustomProxyDomain)
-	}
-
 	return nil
 }
 
 func init() {
-	configFile, tcpPortForwarding, udpPortForwarding, customDns, customProxyDomain := "", "", "", "", ""
+	configFile, tcpPortForwarding, udpPortForwarding, customDns := "", "", "", ""
 	showVersion := false
 	atrustAuthInfo := false
 	atrustTrustDevice := false
 	atrustUntrustDevice := false
 
-	flag.StringVar(&conf.Protocol, "protocol", "easyconnect", "Protocol (easyconnect, atrust)")
-	flag.StringVar(&conf.ServerAddress, "server", "rvpn.zju.edu.cn", "EasyConnect/aTrust server address")
-	flag.IntVar(&conf.ServerPort, "port", 443, "EasyConnect/aTrust port address")
+	flag.StringVar(&conf.ServerAddress, "server", defaultServerAddress, "aTrust server address")
+	flag.IntVar(&conf.ServerPort, "port", 443, "aTrust server port")
 	flag.StringVar(&conf.Username, "username", "", "Your username")
 	flag.StringVar(&conf.Password, "password", "", "Your password")
 	flag.StringVar(&conf.TOTPSecret, "totp-secret", "", "TOTP secret")
-	flag.StringVar(&conf.CertFile, "cert-file", "", "Client certificate p12 file path for certificate login")
-	flag.StringVar(&conf.CertPassword, "cert-password", "", "Client certificate password")
-	flag.BoolVar(&conf.DisableServerConfig, "disable-server-config", false, "Don't parse server config")
-	flag.BoolVar(&conf.SkipDomainResource, "skip-domain-resource", false, "Don't use server domain resource to decide whether to use RVPN.")
-	flag.BoolVar(&conf.DisableZJUConfig, "disable-zju-config", false, "Don't use ZJU config (for easyconnect protocol only)")
-	flag.BoolVar(&conf.DisableRemoteDNS, "disable-zju-dns", false, "Use local DNS instead of remote DNS") // TODO: rename to disable-remote-dns
-	flag.BoolVar(&conf.DisableMultiLine, "disable-multi-line", false, "Disable multi line auto select")
-	flag.BoolVar(&conf.ProxyAll, "proxy-all", false, "Proxy all IPv4 traffic")
+	flag.BoolVar(&conf.DisableRemoteDNS, "disable-remote-dns", false, "Use local DNS instead of remote DNS")
 	flag.StringVar(&conf.SocksBind, "socks-bind", ":1080", "The address SOCKS5 server listens on (e.g. 127.0.0.1:1080)")
 	flag.StringVar(&conf.SocksUser, "socks-user", "", "SOCKS5 username, default is don't use auth")
 	flag.StringVar(&conf.SocksPasswd, "socks-passwd", "", "SOCKS5 password, default is don't use auth")
 	flag.StringVar(&conf.HTTPBind, "http-bind", ":1081", "The address HTTP server listens on (e.g. 127.0.0.1:1081)")
 	flag.StringVar(&conf.ShadowsocksURL, "shadowsocks-url", "", "The address Shadowsocks server listens on (e.g. ss://method:password@host:port)")
 	flag.StringVar(&conf.DialDirectProxy, "dial-direct-proxy", "", "Dial with proxy when the connection doesn't match RVPN rules (e.g. http://127.0.0.1:7890)")
-	flag.BoolVar(&conf.TCPTunnelMode, "tcp-tunnel-mode", false, "Use TCP tunnel only and disable L3 tunnel, only works with atrust protocol")
+	flag.BoolVar(&conf.TCPTunnelMode, "tcp-tunnel-mode", false, "Use the aTrust TCP tunnel only and disable the L3 tunnel")
 	flag.BoolVar(&conf.TUNMode, "tun-mode", false, "Enable TUN mode (experimental)")
 	flag.BoolVar(&conf.AddRoute, "add-route", false, "Add route from rules for TUN interface")
 	flag.Uint64Var(&conf.DNSTTL, "dns-ttl", 3600, "DNS record time to live, unit is second")
 	flag.BoolVar(&conf.DebugDump, "debug-dump", false, "Enable traffic debug dump (only for debug usage)")
 	flag.BoolVar(&conf.DisableKeepAlive, "disable-keep-alive", false, "Disable keep alive")
 	flag.StringVar(&conf.KeepAliveURL, "keep-alive-url", "", "Keep alive URL, default is empty (use DNS keep alive)")
-	flag.StringVar(&conf.RemoteDNSServer, "zju-dns-server", "auto", "Remote DNS server address. Set to 'auto' to use remote DNS server provided by server") // TODO: rename to remote-dns-server
+	flag.StringVar(&conf.RemoteDNSServer, "remote-dns-server", "auto", "Remote DNS server address. Set to 'auto' to use remote DNS server provided by server")
 	flag.StringVar(&conf.SecondaryDNSServer, "secondary-dns-server", "114.114.114.114", "Secondary DNS server address. Leave empty to use system default DNS server")
 	flag.StringVar(&conf.DNSServerBind, "dns-server-bind", "", "The address DNS server listens on (e.g. 127.0.0.1:53)")
-	flag.BoolVar(&conf.DNSHijack, "dns-hijack", false, "Hijack all dns query to ZJU Connect. False by default.")
+	flag.BoolVar(&conf.DNSHijack, "dns-hijack", false, "Hijack all DNS queries to NWAFU Connect. False by default.")
 	flag.BoolVar(&conf.FakeIP, "fake-ip", false, "Enable Fake IP for DNS hijack")
 	flag.StringVar(&conf.GraphCodeFile, "graph-code-file", "", "Graph Check Code File")
-	flag.StringVar(&conf.TwfID, "twf-id", "", "Login using twfID captured (mostly for debug usage)")
-	flag.StringVar(&conf.AuthType, "auth-type", "", "aTrust authentication type (auth/psw, auth/cas, auth/httpsOauth2, auth/smsCheckCode)")
-	flag.StringVar(&conf.Phone, "phone", "", "Phone number with country code for aTrust SMS check code login (e.g. 852-114514)")
-	flag.StringVar(&conf.LoginDomain, "login-domain", "Radius", "aTrust login domain")
+	flag.StringVar(&conf.AuthType, "auth-type", defaultAuthType, "NWAFU authentication type (auth/psw or auth/smsCheckCode)")
+	flag.StringVar(&conf.Phone, "phone", "", "Phone number with country code for aTrust SMS check code login (e.g. 86-13800138000)")
+	flag.StringVar(&conf.LoginDomain, "login-domain", defaultLoginDomain, "aTrust login domain")
 	flag.StringVar(&conf.ClientDataFile, "client-data-file", "", "aTrust Client Data File")
-	flag.StringVar(&conf.CasTicket, "cas-ticket", "", "aTrust CAS Ticket (optional, interactive mode if not set)")
-	flag.StringVar(&conf.OAuth2Code, "oauth2-code", "", "aTrust OAuth2 code (optional, interactive mode if not set)")
 	flag.StringVar(&conf.SID, "sid", "", "aTrust SID (mostly for debug usage)")
 	flag.StringVar(&conf.DeviceID, "device-id", "", "aTrust Device ID (mostly for debug usage)")
 	flag.StringVar(&conf.SignKey, "sign-key", "", "aTrust Sign Key (mostly for debug usage)")
@@ -183,8 +156,7 @@ func init() {
 	flag.IntVar(&conf.UpdateBestNodesInterval, "update-best-nodes-interval", 300, "Interval to update best nodes in seconds. Set to 0 to disable")
 	flag.StringVar(&tcpPortForwarding, "tcp-port-forwarding", "", "TCP port forwarding (e.g. 0.0.0.0:9898-10.10.98.98:80,127.0.0.1:9899-10.10.98.98:80)")
 	flag.StringVar(&udpPortForwarding, "udp-port-forwarding", "", "UDP port forwarding (e.g. 127.0.0.1:53-10.10.0.21:53)")
-	flag.StringVar(&customDns, "custom-dns", "", "Custom set dns lookup (e.g. www.cc98.org:10.10.98.98,appservice.zju.edu.cn:10.203.8.198)")
-	flag.StringVar(&customProxyDomain, "custom-proxy-domain", "", "Custom set domains which force use RVPN proxy  (e.g. science.org, nature.com)")
+	flag.StringVar(&customDns, "custom-dns", "", "Custom DNS records (e.g. library.nwafu.edu.cn:10.0.0.10)")
 	flag.StringVar(&configFile, "config", "", "Config file")
 	flag.BoolVar(&showVersion, "version", false, "Show version")
 	flag.BoolVar(&atrustAuthInfo, "auth-info", false, "Fetch aTrust authentication information, but not login")
@@ -194,15 +166,11 @@ func init() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("ZJU Connect v%s\n", zjuConnectVersion)
+		fmt.Printf("%s v%s\n", applicationName, nwafuConnectVersion)
 		os.Exit(0)
 	}
 
 	if atrustAuthInfo {
-		if conf.Protocol != "atrust" {
-			fmt.Fprintln(os.Stderr, "Auth info is only supported by the atrust protocol")
-			os.Exit(1)
-		}
 		log.SetOutput(io.Discard) // suppress log
 		info, err := atrust.GetAuthInfoList(conf.ServerAddress, conf.ServerPort)
 		if err != nil {
@@ -219,10 +187,6 @@ func init() {
 	}
 
 	if atrustTrustDevice || atrustUntrustDevice {
-		if conf.Protocol != "atrust" {
-			fmt.Fprintln(os.Stderr, "Trust/Untrust device is only supported by the atrust protocol")
-			os.Exit(1)
-		}
 		if conf.ClientDataFile == "" {
 			fmt.Fprintln(os.Stderr, "Client data file is required for trust/untrust device")
 			os.Exit(1)
@@ -258,7 +222,7 @@ func init() {
 			for _, forwardingString := range forwardingStringList {
 				addressStringList := strings.Split(forwardingString, "-")
 				if len(addressStringList) != 2 {
-					fmt.Fprintln(os.Stderr, "ZJU Connect: wrong tcp port forwarding format")
+					fmt.Fprintf(os.Stderr, "%s: wrong TCP port forwarding format\n", applicationName)
 					os.Exit(1)
 				}
 
@@ -275,7 +239,7 @@ func init() {
 			for _, forwardingString := range forwardingStringList {
 				addressStringList := strings.Split(forwardingString, "-")
 				if len(addressStringList) != 2 {
-					fmt.Fprintln(os.Stderr, "ZJU Connect: wrong udp port forwarding format")
+					fmt.Fprintf(os.Stderr, "%s: wrong UDP port forwarding format\n", applicationName)
 					os.Exit(1)
 				}
 
@@ -292,7 +256,7 @@ func init() {
 			for _, dnsString := range dnsList {
 				dnsStringSplit := strings.Split(dnsString, ":")
 				if len(dnsStringSplit) != 2 {
-					fmt.Fprintln(os.Stderr, "ZJU Connect: wrong custom dns format")
+					fmt.Fprintf(os.Stderr, "%s: wrong custom DNS format\n", applicationName)
 					os.Exit(1)
 				}
 
@@ -303,48 +267,25 @@ func init() {
 			}
 		}
 
-		if customProxyDomain != "" {
-			domainList := strings.Split(customProxyDomain, ",")
-			for _, domain := range domainList {
-				var domainRegex = regexp.MustCompile(`^[a-zA-Z\d-]+(\.[a-zA-Z\d-]+)*\.[a-zA-Z]{2,}$`)
-				if !domainRegex.MatchString(domain) {
-					fmt.Fprintf(os.Stderr, "ZJU Connect: %s is not a valid domain\n", domain)
-					os.Exit(1)
-				}
-				conf.CustomProxyDomain = append(conf.CustomProxyDomain, domain)
-			}
-		}
 	}
 
 	missing := conf.ServerAddress == ""
-	if !missing && conf.Protocol == "easyconnect" {
-		missing = (conf.Username == "" || conf.Password == "") && conf.TwfID == ""
-	}
-	if !missing && conf.Protocol == "atrust" {
-		switch conf.AuthType {
-		case "auth/psw":
-			missing = conf.Username == "" || conf.Password == ""
-		case "auth/smsCheckCode":
-			missing = conf.Phone == ""
-		}
-		if missing {
-			missing = conf.SID == "" || conf.DeviceID == "" || conf.ResourceFile == ""
-		}
+	switch conf.AuthType {
+	case "auth/psw":
+		missing = missing || conf.Username == "" || conf.Password == ""
+	case "auth/smsCheckCode":
+		missing = missing || conf.Phone == ""
 	}
 	if missing {
-		fmt.Println("ZJU Connect: missing required arguments")
-		fmt.Println("Please see: https://github.com/mythologyli/zju-connect")
+		missing = conf.SID == "" || conf.DeviceID == "" || conf.ResourceFile == ""
+	}
+	if missing {
+		fmt.Printf("%s: missing required arguments\n", applicationName)
+		fmt.Println("Use -auth-info to inspect the server's available aTrust authentication methods.")
 		fmt.Println("\nUsage:")
 		flag.PrintDefaults()
 
 		os.Exit(1)
 	}
 
-	if conf.Protocol == "atrust" && conf.ServerAddress == "rvpn.zju.edu.cn" {
-		fmt.Println("ZJU Connect: set default aTrust server address to vpn.zju.edu.cn")
-		conf.ServerAddress = "vpn.zju.edu.cn"
-	} else if conf.Protocol == "easyconnect" && conf.ServerAddress == "vpn.zju.edu.cn" {
-		fmt.Println("ZJU Connect: set default EasyConnect server address to rvpn.zju.edu.cn")
-		conf.ServerAddress = "rvpn.zju.edu.cn"
-	}
 }

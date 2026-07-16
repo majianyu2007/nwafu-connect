@@ -11,9 +11,9 @@ import (
 	"syscall"
 
 	tun "github.com/mythologyli/sing-tun"
-	"github.com/mythologyli/zju-connect/client"
-	"github.com/mythologyli/zju-connect/internal/hook_func"
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/log"
 	"golang.org/x/sys/unix"
 	"inet.af/netaddr"
 )

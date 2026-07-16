@@ -5,7 +5,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/mythologyli/zju-connect/client"
+	"github.com/majianyu2007/nwafu-connect/client"
 )
 
 type L3Tunnel struct {

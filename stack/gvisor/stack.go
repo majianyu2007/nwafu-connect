@@ -1,17 +1,14 @@
 package gvisor
 
 import (
-	"context"
 	"errors"
 	"io"
-	"os"
 
-	"github.com/mythologyli/zju-connect/client"
-	"github.com/mythologyli/zju-connect/client/easyconnect"
-	"github.com/mythologyli/zju-connect/internal/hook_func"
-	"github.com/mythologyli/zju-connect/internal/ippool"
-	"github.com/mythologyli/zju-connect/internal/zcdns"
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
+	"github.com/majianyu2007/nwafu-connect/internal/ippool"
+	"github.com/majianyu2007/nwafu-connect/internal/zcdns"
+	"github.com/majianyu2007/nwafu-connect/log"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -100,20 +97,6 @@ func (ep *Endpoint) WritePackets(list stack.PacketBufferList) (int, tcpip.Error)
 				if errors.Is(err, client.ErrResourceNotFound) {
 					log.Printf("%v", err)
 					continue
-				}
-
-				// Server-initiated SHUTDOWN: known terminal state from
-				// sangfor (cmd 0x08). No point retrying; run the registered
-				// cleanup hooks (DNS revert, tun device close, etc.) and
-				// exit so systemd / a wrapper can do a fresh login. This
-				// is strictly better than panicking with a gvisor stack
-				// trace, which obscures the actual cause.
-				if errors.Is(err, easyconnect.ErrSangforShutdown) {
-					log.Printf("WritePackets: server SHUTDOWN; running cleanup hooks and exiting for clean restart")
-					if !hook_func.IsTerminal() {
-						hook_func.ExecTerminalFunc(context.Background())
-					}
-					os.Exit(2)
 				}
 
 				if hook_func.IsTerminal() {

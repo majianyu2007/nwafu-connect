@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mythologyli/zju-connect/client"
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/log"
 	"inet.af/netaddr"
 )
 

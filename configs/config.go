@@ -3,11 +3,11 @@ package configs
 type (
 	Config struct {
 		// Common fields
-		Protocol           string // "easyconnect" or "atrust"
 		ServerAddress      string
 		ServerPort         int
 		Username           string
 		Password           string
+		TOTPSecret         string
 		SocksBind          string
 		SocksUser          string
 		SocksPasswd        string
@@ -15,7 +15,6 @@ type (
 		PortForwardingList []SinglePortForwarding
 		ShadowsocksURL     string
 		DialDirectProxy    string
-		DisableZJUConfig   bool
 		DisableRemoteDNS   bool
 		DNSTTL             uint64
 		RemoteDNSServer    string
@@ -32,24 +31,11 @@ type (
 		GraphCodeFile      string
 		DebugDump          bool
 
-		// EasyConnect fields
-		TOTPSecret          string
-		CertFile            string
-		CertPassword        string
-		DisableServerConfig bool
-		SkipDomainResource  bool
-		DisableMultiLine    bool
-		ProxyAll            bool
-		CustomProxyDomain   []string
-		TwfID               string
-
 		// aTrust fields
 		AuthType                string
 		Phone                   string
 		LoginDomain             string
 		ClientDataFile          string
-		CasTicket               string
-		OAuth2Code              string
 		SID                     string
 		DeviceID                string
 		SignKey                 string
@@ -71,20 +57,12 @@ type (
 
 type (
 	ConfigTOML struct {
-		Protocol                *string                    `toml:"protocol"`
 		ServerAddress           *string                    `toml:"server_address"`
 		ServerPort              *int                       `toml:"server_port"`
 		Username                *string                    `toml:"username"`
 		Password                *string                    `toml:"password"`
 		TOTPSecret              *string                    `toml:"totp_secret"`
-		CertFile                *string                    `toml:"cert_file"`
-		CertPassword            *string                    `toml:"cert_password"`
-		DisableServerConfig     *bool                      `toml:"disable_server_config"`
-		SkipDomainResource      *bool                      `toml:"skip_domain_resource"`
-		DisableZJUConfig        *bool                      `toml:"disable_zju_config"`
-		DisableRemoteDNS        *bool                      `toml:"disable_zju_dns"` // TODO: rename to disable_remote_dns
-		DisableMultiLine        *bool                      `toml:"disable_multi_line"`
-		ProxyAll                *bool                      `toml:"proxy_all"`
+		DisableRemoteDNS        *bool                      `toml:"disable_remote_dns"`
 		SocksBind               *string                    `toml:"socks_bind"`
 		SocksUser               *string                    `toml:"socks_user"`
 		SocksPasswd             *string                    `toml:"socks_passwd"`
@@ -97,7 +75,7 @@ type (
 		DNSTTL                  *uint64                    `toml:"dns_ttl"`
 		DisableKeepAlive        *bool                      `toml:"disable_keep_alive"`
 		KeepAliveURL            *string                    `toml:"keep_alive_url"`
-		RemoteDNSServer         *string                    `toml:"zju_dns_server"` // TODO: rename to remote_dns_server
+		RemoteDNSServer         *string                    `toml:"remote_dns_server"`
 		SecondaryDNSServer      *string                    `toml:"secondary_dns_server"`
 		DNSServerBind           *string                    `toml:"dns_server_bind"`
 		DNSHijack               *bool                      `toml:"dns_hijack"`
@@ -106,13 +84,10 @@ type (
 		DebugDump               *bool                      `toml:"debug_dump"`
 		PortForwarding          []SinglePortForwardingTOML `toml:"port_forwarding"`
 		CustomDNS               []SingleCustomDNSTOML      `toml:"custom_dns"`
-		CustomProxyDomain       []string                   `toml:"custom_proxy_domain"`
 		AuthType                *string                    `toml:"auth_type"`
 		Phone                   *string                    `toml:"phone"`
 		LoginDomain             *string                    `toml:"login_domain"`
 		ClientDataFile          *string                    `toml:"client_data_file"`
-		CasTicket               *string                    `toml:"cas_ticket"`
-		OAuth2Code              *string                    `toml:"oauth2_code"`
 		SID                     *string                    `toml:"sid"`
 		DeviceID                *string                    `toml:"device_id"`
 		SignKey                 *string                    `toml:"sign_key"`

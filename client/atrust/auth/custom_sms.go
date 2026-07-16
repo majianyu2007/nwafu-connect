@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 func (s *Session) completeCustomSMS() (authStep, error) {

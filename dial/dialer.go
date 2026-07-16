@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mythologyli/zju-connect/client"
-	"github.com/mythologyli/zju-connect/log"
-	"github.com/mythologyli/zju-connect/resolve"
-	"github.com/mythologyli/zju-connect/stack"
+	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/log"
+	"github.com/majianyu2007/nwafu-connect/resolve"
+	"github.com/majianyu2007/nwafu-connect/stack"
 )
 
 import (
@@ -17,12 +17,9 @@ import (
 	"errors"
 )
 
-// ErrACLDenied is returned by DialIPPort when the caller forced VPN routing
-// (via alwaysUseVPN / proxy_all) for a destination that the sangfor server
-// would not accept. Sending it through the L3 tunnel would cause the server
-// to terminate the entire session with cmd 0x08 SHUTDOWN, killing all other
-// in-flight connections. Refusing here mirrors what the official EasyConnect
-// client does and keeps the tunnel alive.
+// ErrACLDenied is returned by DialIPPort when the caller forces VPN routing
+// for a destination outside the server-issued resource list. Refusing it
+// client-side avoids sending traffic the Sangfor gateway will reject.
 var ErrACLDenied = errors.New("destination not in sangfor IPResources whitelist (would trigger tunnel SHUTDOWN)")
 
 type Dialer struct {
@@ -137,14 +134,9 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 		}
 	}
 
-	// Client-side ACL enforcement: if alwaysUseVPN forced VPN routing for a
-	// dst:port that isn't in the server-issued resource list, sending it
-	// upstream causes sangfor to terminate the L3 tunnel (cmd 0x08 SHUTDOWN
-	// on the next handshake). The official EasyConnect client filters here
-	// via CSClient before traffic ever reaches the tunnel; we do the same.
-	// Skipped when IPResources are unavailable (parse_resource=false), since
-	// we have no whitelist to enforce. An empty but non-nil slice still means
-	// resources were parsed and no IP destinations are allowed.
+	// Enforce the server-issued resource ACL when callers force VPN routing.
+	// If resources are unavailable, there is no whitelist to enforce. An
+	// empty but non-nil slice means no IP destinations are allowed.
 	if useVPN && !matchedResource && d.ipResources != nil {
 		log.Printf("ACL: refusing %s/%s — not in sangfor IPResources whitelist (would trigger tunnel SHUTDOWN)", ipAddr, network)
 		return nil, ErrACLDenied

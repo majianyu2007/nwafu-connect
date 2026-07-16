@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/mythologyli/zju-connect/log"
+	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 type PasswordLogin struct {
