@@ -29,6 +29,9 @@ type browserHomeResource struct {
 	Name        string
 	Description string
 	SearchText  string
+	Monogram    string
+	Kind        string
+	KindLabel   string
 	Primary     browserHomeAddress
 	Additional  []browserHomeAddress
 }
@@ -44,104 +47,173 @@ var browserHomeTemplate = template.Must(template.New("browser-home").Parse(`<!do
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NWAFU Connect · 校内资源门户</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%230f4233'/><text x='12' y='17' font-family='-apple-system,Segoe UI,sans-serif' font-size='14' font-weight='700' text-anchor='middle' fill='%23ffffff'>N</text></svg>">
 <style>
 :root {
   color-scheme: light;
   --ink: #15231e;
-  --muted: #64736c;
-  --line: #dfe8e3;
-  --paper: #f4f7f5;
-  --green: #123f32;
-  --green-2: #1d5b49;
-  --gold: #e2b654;
+  --muted: #6a7972;
+  --faint: #8d9994;
+  --line: #e3ece8;
+  --hairline: #edf2f0;
+  --paper: #f5f8f6;
+  --paper-2: #fbfdfc;
+  --card: #ffffff;
+  --green: #0f4233;
+  --green-2: #1a6049;
+  --green-soft: #eaf3ef;
+  --green-soft-2: #d8ebdf;
+  --shadow: 0 1px 3px rgba(15, 66, 51, .05), 0 6px 18px rgba(15, 66, 51, .04);
+  --shadow-hover: 0 2px 4px rgba(15, 66, 51, .06), 0 12px 28px rgba(15, 66, 51, .08);
+  --radius: 14px;
+  --gold: #c79a3e;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-button, input { font: inherit; }
-.hero { position: relative; overflow: hidden; min-height: 360px; color: white; background: linear-gradient(135deg, #0c3026 0%, #164e3e 62%, #1d6650 100%); }
-.hero::before, .hero::after { position: absolute; border-radius: 999px; content: ""; filter: blur(1px); opacity: .18; }
-.hero::before { width: 520px; height: 520px; top: -310px; right: -90px; background: #f1ca72; }
-.hero::after { width: 360px; height: 360px; bottom: -270px; left: 12%; border: 1px solid white; }
-.wrap { position: relative; width: min(1160px, calc(100% - 40px)); margin: 0 auto; }
-nav { display: flex; align-items: center; justify-content: space-between; padding: 28px 0; }
-.brand { display: flex; align-items: center; gap: 12px; font-weight: 700; letter-spacing: -.02em; }
-.mark { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid rgba(255,255,255,.28); border-radius: 11px; background: rgba(255,255,255,.1); font-size: 18px; }
-.connected { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: rgba(255,255,255,.08); color: #e5f3ed; font-size: 13px; }
-.connected::before { width: 8px; height: 8px; border-radius: 50%; background: #77d69f; box-shadow: 0 0 0 4px rgba(119,214,159,.14); content: ""; }
-.intro { display: grid; grid-template-columns: 1fr auto; gap: 48px; align-items: end; padding: 48px 0 82px; }
-.eyebrow { margin-bottom: 14px; color: #e8c778; font-size: 12px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
-h1 { max-width: 720px; margin: 0; font-size: clamp(36px, 5vw, 60px); line-height: 1.08; letter-spacing: -.045em; }
-.lead { max-width: 700px; margin: 20px 0 0; color: #c7ddd4; font-size: 16px; }
-.total { min-width: 156px; padding: 20px 24px; border: 1px solid rgba(255,255,255,.16); border-radius: 18px; background: rgba(255,255,255,.08); backdrop-filter: blur(10px); }
-.total strong { display: block; font-size: 34px; line-height: 1; }
-.total span { display: block; margin-top: 8px; color: #c7ddd4; font-size: 13px; }
-.content { padding: 0 0 64px; }
-.search-panel { display: flex; gap: 14px; align-items: center; margin-top: -32px; padding: 16px 18px; border: 1px solid rgba(24,67,53,.09); border-radius: 18px; background: white; box-shadow: 0 18px 50px rgba(21,57,45,.12); }
-.search-icon { flex: 0 0 auto; width: 20px; color: #557268; }
-#resourceSearch { width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 16px; }
-#resourceSearch::placeholder { color: #92a099; }
-.shortcut { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; color: #809087; background: #f8faf9; font-size: 12px; }
-.section-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin: 46px 0 18px; }
-h2 { margin: 0; font-size: 22px; letter-spacing: -.025em; }
-.section-head p { margin: 5px 0 0; color: var(--muted); }
-#resultCount { color: var(--muted); font-size: 13px; white-space: nowrap; }
-.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: white; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
-.card:hover { transform: translateY(-2px); border-color: #b8cec4; box-shadow: 0 12px 28px rgba(27,67,53,.08); }
-.card-main { display: flex; gap: 13px; align-items: flex-start; min-height: 96px; padding: 17px 16px 14px; }
-.resource-icon { display: grid; flex: 0 0 auto; width: 42px; height: 42px; place-items: center; border-radius: 12px; color: var(--green-2); background: #eaf3ef; font-size: 14px; font-weight: 800; }
-.card-copy { min-width: 0; }
-.resource-name { display: block; overflow: hidden; font-weight: 700; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
-.description { display: -webkit-box; overflow: hidden; margin-top: 4px; color: var(--muted); font-size: 12px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.address, .address-static { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 16px; border-top: 1px solid #edf2ef; color: var(--green-2); background: #fbfcfb; font-size: 12px; text-decoration: none; }
-.address:hover { background: #f3f8f5; }
-.host { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.meta { color: #839189; white-space: nowrap; }
-details { border-top: 1px solid #edf2ef; background: #fbfcfb; }
-summary { padding: 9px 16px; color: #587167; cursor: pointer; font-size: 12px; list-style-position: inside; }
-details .address, details .address-static { padding-left: 28px; border-top-color: #f0f3f1; }
-.empty { display: none; padding: 48px 24px; border: 1px dashed #c7d7d0; border-radius: 16px; color: var(--muted); text-align: center; }
-.actions { display: flex; justify-content: center; margin-top: 24px; }
-#showMore { padding: 10px 18px; border: 1px solid #bed0c7; border-radius: 10px; color: var(--green); background: white; cursor: pointer; font-weight: 650; }
-#showMore:hover { border-color: var(--green-2); background: #f8fbf9; }
-.protocol-toggle { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; padding: 7px 14px; border: 1px solid #cfe0d8; border-radius: 999px; color: var(--green-2); background: white; cursor: pointer; font-size: 12px; font-weight: 600; }
-.protocol-toggle:hover { background: #f3f8f5; }
-.protocol-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
-.protocol-toggle .chev { display: inline-block; transition: transform .18s ease; }
-.protocol-guide { display: none; margin-top: 12px; padding: 18px 20px; border: 1px solid #cfe0d8; border-radius: 15px; background: #edf6f2; }
-.protocol-guide.open { display: block; }
-.protocol-guide strong { display: block; margin-bottom: 3px; color: var(--green); }
-.protocol-guide p { margin: 0; color: #5e756b; font-size: 12px; }
-.protocol-guide code { display: block; overflow-x: auto; margin-top: 9px; padding: 8px 10px; border-radius: 7px; color: #dcece5; background: #173d31; white-space: nowrap; }
-.copy-button { padding: 9px 14px; border: 1px solid #afc9bd; border-radius: 9px; color: var(--green); background: white; cursor: pointer; font-weight: 650; white-space: nowrap; }
-.copy-button:hover { border-color: var(--green-2); }
-.card { cursor: default; }
-.card.has-url { cursor: pointer; }
-.card.has-url .card-main { cursor: pointer; }
-.card.has-url:active { transform: translateY(0); border-color: #9bb7aa; box-shadow: 0 4px 14px rgba(27,67,53,.1); }
-.card.has-url::after { content: "↗"; position: absolute; top: 12px; right: 14px; color: #b9ccc1; font-size: 14px; font-weight: 700; opacity: 0; transition: opacity .18s ease; }
-.card.has-url:hover::after { opacity: 1; }
-.card { position: relative; }
-.notice { display: grid; grid-template-columns: auto 1fr; gap: 14px; margin-top: 42px; padding: 20px; border: 1px solid #eadcb9; border-radius: 15px; background: #fffaf0; }
-.notice-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 10px; color: #765817; background: #f5e6bd; font-weight: 800; }
-.notice strong { display: block; margin-bottom: 3px; }
-.notice p { margin: 0; color: #796b49; font-size: 13px; }
-footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; }
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+body {
+  margin: 0;
+  background: var(--paper);
+  background-image: linear-gradient(180deg, #eef4f0 0%, var(--paper) 280px);
+  color: var(--ink);
+  font: 14.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+button, input { font: inherit; color: inherit; }
+.wrap { position: relative; width: min(1200px, calc(100% - 48px)); margin: 0 auto; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+
+.hero {
+  position: relative; overflow: hidden; color: #f6f9f7;
+  background: linear-gradient(140deg, #0c2c23 0%, #163f32 55%, #1d5b46 100%);
+}
+.hero::before, .hero::after { content: ""; position: absolute; pointer-events: none; filter: blur(20px); }
+.hero::before { inset: auto -20% -60% auto; width: 60%; height: 160%; background: radial-gradient(closest-side, rgba(199,154,62,.20), transparent 70%); }
+.hero::after  { inset: 30% auto auto -10%; width: 36%; height: 120%; background: radial-gradient(closest-side, rgba(120,200,170,.16), transparent 70%); }
+nav { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 24px 0 0; color: #e9f3ee; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.01em; font-size: 15px; }
+.mark { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 9px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.16); font-size: 15px; font-weight: 700; }
+.connected { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.06); color: #d6e6dd; font-size: 12px; }
+.connected::before { width: 7px; height: 7px; border-radius: 50%; background: #6cd49a; box-shadow: 0 0 0 3px rgba(108,212,154,.18); content: ""; }
+.intro { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 40px; align-items: end; padding: 56px 0 70px; }
+.eyebrow { margin-bottom: 14px; color: var(--gold); font-size: 11px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; }
+h1 { max-width: 720px; margin: 0; font-size: clamp(28px, 4vw, 42px); line-height: 1.12; letter-spacing: -.02em; font-weight: 600; }
+.lead { max-width: 640px; margin: 16px 0 0; color: #b6ccc2; font-size: 14.5px; line-height: 1.65; }
+.total { min-width: 132px; padding: 18px 22px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.06); backdrop-filter: blur(10px); }
+.total strong { display: block; font-size: 30px; font-weight: 700; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.total span { display: block; margin-top: 6px; color: #b6ccc2; font-size: 12px; }
+
+.content { padding: 0 0 80px; }
+.search-panel {
+  position: relative; display: flex; gap: 12px; align-items: center;
+  margin: -34px auto 0; padding: 14px 18px;
+  border: 1px solid rgba(15,66,51,.08); border-radius: 16px;
+  background: white; box-shadow: 0 8px 28px rgba(15,66,51,.10);
+}
+.search-icon { flex: 0 0 auto; color: #7a8983; display: grid; place-items: center; }
+#resourceSearch { width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 15px; }
+#resourceSearch::placeholder { color: #99a8a1; }
+.shortcut { padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; color: #859390; background: #f4f7f5; font-size: 11px; letter-spacing: .02em; }
+
+.protocol-toggle-wrap { text-align: center; margin-top: 18px; }
+.protocol-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 13px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--green-2); background: white; cursor: pointer;
+  font-size: 12px; font-weight: 500;
+  transition: background .15s ease, border-color .15s ease;
+}
+.protocol-toggle:hover { background: var(--green-soft); border-color: var(--green-soft-2); }
+.protocol-toggle .chev { transition: transform .18s ease; }
+.protocol-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.protocol-guide { display: none; margin: 10px auto 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper-2); max-width: 980px; }
+.protocol-guide.open { display: block; }
+.protocol-guide strong { display: block; margin-bottom: 4px; color: var(--green); font-size: 13px; font-weight: 600; }
+.protocol-guide p { margin: 0; color: var(--muted); font-size: 12px; }
+.protocol-guide code { display: block; overflow-x: auto; margin-top: 10px; padding: 10px 12px; border-radius: 8px; color: #cfe6dd; background: #133025; font: 12px/1.5 "SF Mono", Menlo, Consolas, monospace; white-space: nowrap; }
+.copy-button { margin-top: 10px; padding: 7px 13px; border: 1px solid var(--green-soft-2); border-radius: 8px; color: var(--green); background: white; cursor: pointer; font-size: 12px; font-weight: 500; transition: background .15s ease, border-color .15s ease, color .15s ease; }
+.copy-button:hover { background: var(--green-soft); border-color: var(--green-2); }
+.copy-button.copied { background: var(--green); color: white; border-color: var(--green); }
+
+.section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin: 48px 0 18px; }
+h2 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+.section-head p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+#resultCount { color: var(--faint); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+
+.card {
+  position: relative; min-width: 0; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--card);
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+  animation: cardIn .32s ease backwards;
+}
+@keyframes cardIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.card:hover { transform: translateY(-1px); border-color: #c5d6cf; box-shadow: var(--shadow-hover); }
+.card.has-url { cursor: pointer; }
+.card.has-url:focus-visible { outline: 0; border-color: var(--green-2); box-shadow: 0 0 0 3px rgba(26,96,73,.18); }
+.card.has-url:active { transform: translateY(0); box-shadow: var(--shadow); }
+.card-main { padding: 16px 16px 14px; }
+.card-row { display: flex; gap: 12px; align-items: flex-start; }
+.resource-icon {
+  display: grid; flex: 0 0 auto; width: 40px; height: 40px; place-items: center; border-radius: 11px;
+  background: linear-gradient(140deg, #eef5f1 0%, #d9ecdf 100%);
+  color: var(--green); font-size: 15px; font-weight: 700; letter-spacing: -.01em;
+  box-shadow: inset 0 0 0 1px rgba(15,66,51,.04);
+}
+.card-copy { min-width: 0; flex: 1; }
+.resource-name { display: block; overflow: hidden; font-weight: 600; font-size: 14.5px; letter-spacing: -.005em; text-overflow: ellipsis; white-space: nowrap; }
+.type-badge { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 500; letter-spacing: .04em; background: #eef2f0; color: var(--muted); text-transform: uppercase; }
+.type-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.type-badge.kind-web { color: #1a6049; background: #e6f1ea; }
+.type-badge.kind-ssh { color: #b86a23; background: #f8eede; }
+.type-badge.kind-tcp { color: #5a6770; background: #edf1f3; }
+.type-badge.kind-all { color: #6246c2; background: #ecedf8; }
+.type-badge.kind-mix { color: #1a6049; background: #e6f1ea; }
+.description { display: -webkit-box; overflow: hidden; margin-top: 6px; color: var(--muted); font-size: 12.5px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
+.address, .address-static { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 16px; border-top: 1px solid var(--hairline); color: var(--green-2); background: var(--paper-2); font-size: 12px; }
+.address { cursor: pointer; transition: background .14s ease; }
+.address:hover { background: #ecf3ee; }
+.address[data-url]:focus-visible { outline: 0; background: #e3efea; }
+.host { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; font-feature-settings: "tnum" 1; }
+.meta { color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+details { border-top: 1px solid var(--hairline); background: var(--paper-2); }
+summary { padding: 9px 16px; color: var(--muted); cursor: pointer; font-size: 12px; list-style: none; display: flex; align-items: center; gap: 6px; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: ""; width: 0; height: 0; border: 4px solid transparent; border-left-color: currentColor; opacity: .6; }
+details[open] summary::before { transform: rotate(90deg); }
+details .address, details .address-static { padding-left: 28px; border-top-color: #f0f4f2; }
+
+.card.has-url .open-chev { position: absolute; top: 12px; right: 14px; width: 16px; height: 16px; color: #b3c5bc; opacity: 0; transition: opacity .18s ease, transform .18s ease; }
+.card.has-url:hover .open-chev, .card.has-url:focus-visible .open-chev { opacity: 1; transform: translate(2px, -2px); }
+
+.empty { display: none; padding: 56px 24px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--muted); text-align: center; background: var(--paper-2); }
+.empty-icon { display: block; margin: 0 auto 12px; color: #b7c7bf; }
+.empty strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 15px; font-weight: 600; }
+
+.actions { display: flex; justify-content: center; margin-top: 26px; }
+#showMore { padding: 9px 18px; border: 1px solid var(--line); border-radius: 10px; color: var(--green); background: white; cursor: pointer; font-weight: 500; font-size: 13px; transition: background .15s ease, border-color .15s ease; }
+#showMore:hover { background: var(--green-soft); border-color: var(--green-soft-2); }
+
+.notice { display: grid; grid-template-columns: auto 1fr; gap: 14px; margin-top: 44px; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-2); }
+.notice-icon { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 9px; color: var(--green-2); background: var(--green-soft); }
+.notice strong { display: block; margin-bottom: 3px; font-size: 13.5px; font-weight: 600; }
+.notice p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+footer { margin-top: 44px; padding-bottom: 8px; color: var(--faint); font-size: 12px; text-align: center; }
+
 @media (max-width: 850px) {
-  .intro { grid-template-columns: 1fr; gap: 26px; padding-top: 34px; }
+  .intro { grid-template-columns: 1fr; gap: 24px; padding-top: 36px; }
   .total { width: fit-content; }
-  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
-  .wrap { width: min(100% - 24px, 1160px); }
+  .wrap { width: min(100% - 28px, 1200px); }
   nav { padding-top: 18px; }
   .connected { font-size: 0; }
   .connected::after { content: "已连接"; font-size: 12px; }
-  .intro { padding-bottom: 68px; }
-  .grid { grid-template-columns: 1fr; }
+  .intro { padding-bottom: 72px; }
   .shortcut { display: none; }
-  .section-head { align-items: start; flex-direction: column; gap: 8px; }
+  .section-head { align-items: flex-start; flex-direction: column; gap: 6px; }
 }
 </style>
 </head>
@@ -156,7 +228,7 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
       <div>
         <div class="eyebrow">Campus Resource Gateway</div>
         <h1>校内资源，一站直达</h1>
-        <p class="lead">浏览本次登录由学校 aTrust 网关授权的资源。点击资源后，NWAFU Connect 会自动通过对应的安全隧道访问。</p>
+        <p class="lead">浏览本次登录由学校 aTrust 网关授权的资源。点击资源，NWAFU Connect 会自动通过对应安全隧道访问。</p>
       </div>
       <div class="total"><strong>{{len .Resources}}</strong><span>项应用资源</span></div>
     </div>
@@ -164,16 +236,21 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
 </header>
 <main class="content wrap">
   <label class="search-panel" for="resourceSearch">
-    <span class="search-icon">⌕</span>
+    <span class="search-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
     <span class="sr-only">搜索资源名称、说明或地址</span>
     <input id="resourceSearch" type="search" placeholder="搜索资源名称、说明或地址…" autocomplete="off">
     <span class="shortcut">⌘ K</span>
   </label>
-  <div style="text-align:center;">
-    <button class="protocol-toggle" id="sshToggle" type="button" aria-expanded="false" aria-controls="sshGuide"><span class="chev">▸</span> SSH / SFTP 等 TCP 客户端接入</button>
+  <div class="protocol-toggle-wrap">
+    <button class="protocol-toggle" id="sshToggle" type="button" aria-expanded="false" aria-controls="sshGuide">
+      <svg class="chev" width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="M3.5 2 8 6 3.5 10"/></svg>
+      SSH / SFTP 等 TCP 客户端接入
+    </button>
   </div>
   <section class="protocol-guide" id="sshGuide" role="region" aria-labelledby="sshToggle">
-    <div><strong>SSH / SFTP 等 TCP 客户端</strong><p>使用随应用打包的 stdio 代理助手，将任意 TCP 客户端接入当前 aTrust 会话：</p><code id="sshCommand">{{.SSHCommand}}</code></div>
+    <strong>SSH / SFTP 等 TCP 客户端</strong>
+    <p>使用随应用打包的 stdio 代理助手，将任意 TCP 客户端接入当前 aTrust 会话：</p>
+    <code id="sshCommand">{{.SSHCommand}}</code>
     <button class="copy-button" type="button" data-copy="sshCommand">复制命令</button>
   </section>
   <div class="section-head">
@@ -181,11 +258,18 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
     <span id="resultCount">{{len .Resources}} 个结果</span>
   </div>
   <section id="resourceGrid" class="grid" aria-live="polite">
-    {{range .Resources}}<article class="card{{if .Primary.URL}} has-url{{end}}" data-search="{{.SearchText}}"{{if .Primary.URL}} data-url="{{.Primary.URL}}" tabindex="0" role="link"{{end}}><div class="card-main"><span class="resource-icon">R</span><span class="card-copy"><span class="resource-name">{{.Name}}</span>{{if .Description}}<span class="description">{{.Description}}</span>{{end}}</span></div>{{if .Primary.URL}}<div class="address" role="presentation"><span class="host">{{.Primary.Host}}</span><span class="meta">{{.Primary.Protocol}} · {{.Primary.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{.Primary.Host}}</span><span class="meta">{{.Primary.Protocol}} · {{.Primary.Ports}}</span></div>{{end}}{{if .Additional}}<details><summary>另外 {{len .Additional}} 个下发地址</summary>{{range .Additional}}{{if .URL}}<div class="address" data-url="{{.URL}}" role="link" tabindex="0"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{end}}{{end}}</details>{{end}}</article>{{end}}
+    {{range $i, $r := .Resources}}<article class="card{{if $r.Primary.URL}} has-url{{end}}" data-search="{{$r.SearchText}}" style="animation-delay: {{$i}}ms;"{{if $r.Primary.URL}} data-url="{{$r.Primary.URL}}" tabindex="0" role="link"{{end}}><div class="card-main"><div class="card-row"><span class="resource-icon" aria-hidden="true">{{$r.Monogram}}</span><div class="card-copy"><span class="resource-name">{{$r.Name}}</span>{{if $r.Kind}}<span class="type-badge kind-{{$r.Kind}}"><span class="dot"></span>{{$r.KindLabel}}</span>{{end}}{{if $r.Description}}<span class="description">{{$r.Description}}</span>{{end}}</div></div></div>{{if $r.Primary.URL}}<div class="address" data-url="{{$r.Primary.URL}}" role="link" tabindex="0"><span class="host">{{$r.Primary.Host}}</span><span class="meta">{{$r.Primary.Protocol}} · {{$r.Primary.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{$r.Primary.Host}}</span><span class="meta">{{$r.Primary.Protocol}} · {{$r.Primary.Ports}}</span></div>{{end}}{{if $r.Additional}}<details><summary>另外 {{len $r.Additional}} 个下发地址</summary>{{range $r.Additional}}{{if .URL}}<div class="address" data-url="{{.URL}}" role="link" tabindex="0"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{end}}{{end}}</details>{{end}}{{if $r.Primary.URL}}<svg class="open-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 11 11 5"/><path d="M6 5h5v5"/></svg>{{end}}</article>{{end}}
   </section>
-  <div id="emptyState" class="empty">没有找到匹配的授权资源，请尝试其他关键词。</div>
+  <div id="emptyState" class="empty">
+    <svg class="empty-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    <strong>没有找到匹配的资源</strong>
+    请尝试其他关键词，或清除搜索查看全部下发资源。
+  </div>
   <div class="actions"><button id="showMore" type="button">显示全部资源</button></div>
-  <aside class="notice"><span class="notice-icon">i</span><div><strong>找不到需要的校内网站？</strong><p>NWAFU Connect 只能使用学校 aTrust 网关下发并授权的资源。若校内网站未出现在列表中，需要由学校网络管理员将它加入 aTrust 资源策略，客户端无法绕过网关权限。</p></div></aside>
+  <aside class="notice">
+    <span class="notice-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span>
+    <div><strong>找不到需要的校内网站？</strong><p>NWAFU Connect 只能使用学校 aTrust 网关下发并授权的资源。若校内网站未出现在列表中，需要由学校网络管理员将它加入 aTrust 资源策略，客户端无法绕过网关权限。</p></div>
+  </aside>
   <footer>NWAFU Connect · 临时受管浏览器会话</footer>
 </main>
 <script>
@@ -217,12 +301,12 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
     }
   });
   document.querySelectorAll("[data-copy]").forEach(button => {
+    const original = button.textContent;
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
       const text = document.getElementById(button.dataset.copy).textContent;
-      try {
-        await navigator.clipboard.writeText(text);
-      } catch (_) {
+      try { await navigator.clipboard.writeText(text); }
+      catch (_) {
         const area = document.createElement("textarea");
         area.value = text;
         document.body.appendChild(area);
@@ -230,8 +314,12 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
         document.execCommand("copy");
         area.remove();
       }
+      button.classList.add("copied");
       button.textContent = "已复制";
-      setTimeout(() => { button.textContent = "复制命令"; }, 1500);
+      setTimeout(() => {
+        button.classList.remove("copied");
+        button.textContent = original;
+      }, 1500);
     });
   });
   const sshToggle = document.getElementById("sshToggle");
@@ -242,50 +330,40 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
       sshToggle.setAttribute("aria-expanded", open ? "true" : "false");
     });
   }
-  function openResource(url, source) {
+  function openResource(url) {
     if (!url) return;
-    const dimmer = document.createElement("div");
-    dimmer.textContent = "正在通过安全隧道打开…";
-    dimmer.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 22px;border-radius:10px;background:#123f32;color:#fff;font-size:14px;box-shadow:0 8px 24px rgba(18,63,50,.35);z-index:9999;animation:fadeIn .15s ease;opacity:0;transition:opacity .18s ease;";
-    document.body.appendChild(dimmer);
-    requestAnimationFrame(() => { dimmer.style.opacity = "1"; });
+    const toast = document.createElement("div");
+    toast.textContent = "正在通过安全隧道打开…";
+    toast.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:10px;background:#0f4233;color:#fff;font-size:13px;letter-spacing:.02em;box-shadow:0 8px 24px rgba(15,66,51,.28);z-index:9999;opacity:0;transition:opacity .18s ease;";
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => { toast.style.opacity = "1"; });
     const a = document.createElement("a");
-    a.href = url;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
+    a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
     document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => {
-      dimmer.style.opacity = "0";
-      setTimeout(() => dimmer.remove(), 220);
-    }, 900);
+    a.click(); a.remove();
+    setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => toast.remove(), 220); }, 900);
   }
   document.querySelectorAll(".card").forEach(card => {
-    const open = () => openResource(card.dataset.url, card);
+    const open = () => openResource(card.dataset.url);
     card.addEventListener("click", (event) => {
       if (event.target.closest("details") || event.target.closest("summary")) return;
       if (!card.dataset.url) return;
-      event.preventDefault();
-      open();
+      event.preventDefault(); open();
     });
     card.addEventListener("keydown", (event) => {
       if ((event.key === "Enter" || event.key === " ") && card.dataset.url) {
-        event.preventDefault();
-        open();
+        event.preventDefault(); open();
       }
     });
   });
   document.querySelectorAll(".address[data-url]").forEach(row => {
     row.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openResource(row.dataset.url, row);
+      event.preventDefault(); event.stopPropagation();
+      openResource(row.dataset.url);
     });
     row.addEventListener("keydown", (event) => {
       if ((event.key === "Enter" || event.key === " ") && row.dataset.url) {
-        event.preventDefault();
-        openResource(row.dataset.url, row);
+        event.preventDefault(); openResource(row.dataset.url);
       }
     });
   });
@@ -320,10 +398,14 @@ func StartBrowserHome(sourceResources []client.Resource, proxyAddress string) (s
 		if name == "" {
 			name = addresses[0].Host
 		}
+		kind, kindLabel := inferResourceType(source)
 		resources = append(resources, browserHomeResource{
 			Name:        name,
 			Description: strings.TrimSpace(source.Description),
 			SearchText:  strings.Join(searchParts, " "),
+			Monogram:    resourceMonogram(name),
+			Kind:        kind,
+			KindLabel:   kindLabel,
 			Primary:     addresses[0],
 			Additional:  addresses[1:],
 		})
@@ -348,7 +430,7 @@ func StartBrowserHome(sourceResources []client.Resource, proxyAddress string) (s
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if err := browserHomeTemplate.Execute(w, browserHomeData{Resources: resources, SSHCommand: sshProxyCommand(proxyAddress)}); err != nil {
 			log.Printf("Render managed browser home page failed: %v", err)
@@ -420,4 +502,87 @@ func portRange(minimum, maximum int) string {
 		return fmt.Sprint(minimum)
 	}
 	return fmt.Sprintf("%d–%d", minimum, maximum)
+}
+
+// resourceMonogram derives a short (1-2 character) badge label from a resource
+// name. It strips common Chinese suffixes like 服务器/系统/平台/网站, prefers the
+// first two CJK characters when present, and falls back to uppercase ASCII
+// initials for domain-like or latin names. Pure IP addresses collapse to "IP".
+func resourceMonogram(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "·"
+	}
+	if net.ParseIP(name) != nil {
+		return "IP"
+	}
+	suffixes := []string{"管理系统", "查询系统", "考试系统", "学习系统", "服务器", "系统", "平台", "网站", "网页", "服务", "门户", "工具", "中心"}
+	stem := name
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(stem, suffix) && len([]rune(stem)) > len([]rune(suffix)) {
+			stem = strings.TrimSuffix(stem, suffix)
+			break
+		}
+	}
+	if stem == "" {
+		stem = name
+	}
+	var cjk []rune
+	for _, r := range stem {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			cjk = append(cjk, r)
+			if len(cjk) == 2 {
+				break
+			}
+		}
+	}
+	if len(cjk) == 2 {
+		return string(cjk)
+	}
+	if len(cjk) == 1 {
+		return string(cjk)
+	}
+	parts := strings.FieldsFunc(stem, func(r rune) bool {
+		return r == ' ' || r == '.' || r == '-' || r == '_' || r == '/' || r == '@' || r == ':'
+	})
+	if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
+		return strings.ToUpper(string(parts[0][0]) + string(parts[1][0]))
+	}
+	runes := []rune(stem)
+	if len(runes) >= 2 {
+		return strings.ToUpper(string(runes[:2]))
+	}
+	return strings.ToUpper(string(runes))
+}
+
+// inferResourceType classifies a resource by the ports its addresses expose so
+// the portal can show a small "Web / SSH / TCP / 全部 / 混合" badge on each card.
+func inferResourceType(source client.Resource) (kind, label string) {
+	hasWeb, hasSSH, hasWide := false, false, false
+	for _, address := range source.Addresses {
+		if address.Protocol != "tcp" && address.Protocol != "all" {
+			continue
+		}
+		if address.PortMin <= 22 && address.PortMax >= 22 {
+			hasSSH = true
+		}
+		if (address.PortMin <= 80 && address.PortMax >= 80) || (address.PortMin <= 443 && address.PortMax >= 443) {
+			hasWeb = true
+		}
+		if address.Protocol == "all" || (address.PortMin <= 1 && address.PortMax >= 65535) {
+			hasWide = true
+		}
+	}
+	switch {
+	case (hasSSH && hasWeb) || (hasWide && (hasSSH || hasWeb)):
+		return "mix", "混合"
+	case hasSSH:
+		return "ssh", "SSH"
+	case hasWeb:
+		return "web", "Web"
+	case hasWide:
+		return "all", "全部"
+	default:
+		return "tcp", "TCP"
+	}
 }
