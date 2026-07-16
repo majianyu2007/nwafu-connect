@@ -184,3 +184,13 @@ go build .                                 # 本地构建
 - 生产服务优先使用 `-config`，不要把密码直接写进命令行或 plist/systemd 参数。
 
 Docker 使用见 [`docs/docker.md`](docs/docker.md)，系统服务配置见 [`docs/service.md`](docs/service.md)。
+
+## SSH / SFTP 等 TCP 客户端接入
+
+受管浏览器模式会随应用打包一个 stdio 代理助手 `nwafu-connect-proxy`，可把任意 TCP 客户端（ssh、sftp、scp、rsync 等）接入当前 aTrust 会话：
+
+```bash
+ssh -o 'ProxyCommand="/Applications/NWAFU Connect.app/Contents/MacOS/nwafu-connect-proxy" --proxy 127.0.0.1:63665 --target %h:%p' user@10.133.16.10
+```
+
+其中 `--proxy` 为资源门户页面显示的本地代理监听地址，`--target` 为目标校内主机与端口。Linux/Windows 用户把代理助手路径替换为安装目录中的对应可执行文件即可。

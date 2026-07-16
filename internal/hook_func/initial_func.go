@@ -76,16 +76,23 @@ func checkBindPortLegal(ctx context.Context, config configs.Config) error {
 	}
 
 	for _, kind := range []string{"tcp", "udp"} {
-		connectionStats, err := netstat.Connections(kind)
-		if err != nil {
-			// skip this check due to lack of information
-			return nil
-		}
 		var targetCheckPorts []uint32
 		if kind == "tcp" {
 			targetCheckPorts = checkTCPPorts
 		} else {
 			targetCheckPorts = checkUDPPorts
+		}
+		if len(targetCheckPorts) == 0 {
+			// Browser mode does not expose local SOCKS/HTTP/DNS listeners, so
+			// there is nothing to conflict with. Skipping the netstat scan
+			// also avoids the macOS "Local Network" permission prompt that
+			// gopsutil would otherwise trigger on first launch.
+			continue
+		}
+		connectionStats, err := netstat.Connections(kind)
+		if err != nil {
+			// skip this check due to lack of information
+			return nil
 		}
 		for _, conn := range connectionStats {
 			for _, checkPort := range targetCheckPorts {

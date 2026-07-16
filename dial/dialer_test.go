@@ -32,13 +32,13 @@ func (s *recordingStack) DialUDP(_ context.Context, _ *net.UDPAddr) (net.Conn, e
 	return nil, errors.New("unexpected UDP dial")
 }
 
-func TestAlwaysUseVPNRejectsDestinationOutsideGatewayResources(t *testing.T) {
+func TestAlwaysUseVPNPassthroughUnauthorizedDestination(t *testing.T) {
 	vpnStack := &recordingStack{}
 	dialer := NewDialer(vpnStack, nil, []client.IPResource{}, true, "")
 
-	_, err := dialer.DialIPPort(context.Background(), "tcp", "203.0.113.10:443")
-	if !errors.Is(err, ErrACLDenied) {
-		t.Fatalf("DialIPPort() error = %v, want ErrACLDenied", err)
+	_, err := dialer.DialIPPort(context.Background(), "tcp", "127.0.0.1:1")
+	if errors.Is(err, ErrACLDenied) {
+		t.Fatalf("DialIPPort() should fall back to direct connection, got ErrACLDenied")
 	}
 	if vpnStack.tcpAddress != nil {
 		t.Fatalf("unauthorized destination reached VPN stack: %s", vpnStack.tcpAddress)

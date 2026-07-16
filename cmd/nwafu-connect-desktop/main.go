@@ -30,6 +30,9 @@ var trayIconPNG []byte
 //go:embed assets/app-icon.png
 var appIconPNG []byte
 
+//go:embed assets/NotoSansSC-Regular.otf
+var notoSansSC []byte
+
 func main() {
 	corePath := flag.String("core", "", "path to the nwafu-connect core executable")
 	noAutoConnect := flag.Bool("no-auto-connect", false, "start the tray without connecting (for diagnostics)")
@@ -47,8 +50,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-
 	application := app.NewWithID("com.nwafu.connect.desktop")
+	application.Settings().SetTheme(newCJKTheme())
 	application.Lifecycle().SetOnStarted(dockhide.Hide)
 	application.Lifecycle().SetOnEnteredForeground(dockhide.Hide)
 	appIcon := fyne.NewStaticResource("NWAFUConnect.png", appIconPNG)

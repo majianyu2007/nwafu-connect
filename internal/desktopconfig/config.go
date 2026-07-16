@@ -57,6 +57,34 @@ func (s Store) Save(configuration configs.ConfigTOML, preferences Preferences) e
 	return nil
 }
 
+// LoadRaw returns the raw TOML bytes of the stored configuration, or an empty
+// document bootstrapped from the defaults when no config exists yet.
+func (s Store) LoadRaw() ([]byte, error) {
+	payload, err := os.ReadFile(s.ConfigPath)
+	if err == nil {
+		return payload, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read raw desktop configuration: %w", err)
+	}
+	defaults := s.defaults()
+	var document bytes.Buffer
+	if err := toml.NewEncoder(&document).Encode(defaults); err != nil {
+		return nil, fmt.Errorf("encode default desktop configuration: %w", err)
+	}
+	return document.Bytes(), nil
+}
+
+// SaveRaw persists raw TOML bytes as the desktop configuration after validating
+// that it decodes into a ConfigTOML.
+func (s Store) SaveRaw(payload []byte) error {
+	var decoded configs.ConfigTOML
+	if err := toml.Unmarshal(payload, &decoded); err != nil {
+		return fmt.Errorf("validate desktop configuration: %w", err)
+	}
+	return writePrivateFile(s.ConfigPath, payload)
+}
+
 func (s Store) defaults() configs.ConfigTOML {
 	server := "vpn.nwafu.edu.cn"
 	port := 443

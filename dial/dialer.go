@@ -128,9 +128,14 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 		}
 	}
 
-	if useVPN && !matchedResource && d.ipResources != nil {
-		log.Printf("ACL: refusing %s/%s because it is not authorized by the aTrust gateway", ipAddr, network)
-		return nil, ErrACLDenied
+	if useVPN && !matchedResource {
+		// The browser proxy runs in always-VPN mode to keep campus traffic on
+		// the aTrust tunnel. Destinations the gateway did not authorize (CDNs,
+		// analytics, fonts, etc.) are reached directly instead of being blocked,
+		// so campus pages can still load external assets without leaking the
+		// VPN session to unauthorized destinations.
+		log.Printf("ACL: %s/%s not in aTrust resources; using direct connection", ipAddr, network)
+		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 	}
 
 	if useVPN {

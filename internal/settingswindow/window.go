@@ -3,31 +3,34 @@ package settingswindow
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/majianyu2007/nwafu-connect/internal/desktopconfig"
 )
 
 type Window struct {
-	window        fyne.Window
-	store         desktopconfig.Store
-	onSave        func(desktopconfig.Preferences) error
-	server        *widget.Entry
-	port          *widget.Entry
-	authType      *widget.Select
-	loginDomain   *widget.Entry
-	username      *widget.Entry
-	phone         *widget.Entry
-	password      *widget.Entry
-	totpSecret    *widget.Entry
-	browserPath   *widget.Entry
-	browserURL    *widget.Entry
-	launchAtLogin *widget.Check
-	status        *widget.Label
+	window         fyne.Window
+	store          desktopconfig.Store
+	onSave         func(desktopconfig.Preferences) error
+	server         *widget.Entry
+	port           *widget.Entry
+	authType       *widget.Select
+	loginDomain    *widget.Entry
+	username       *widget.Entry
+	phone          *widget.Entry
+	password       *widget.Entry
+	totpSecret     *widget.Entry
+	browserPath    *widget.Entry
+	browserURL     *widget.Entry
+	launchAtLogin  *widget.Check
+	advancedConfig *widget.Entry
+	status         *widget.Label
 }
 
 func New(application fyne.App, store desktopconfig.Store, icon fyne.Resource, onSave func(desktopconfig.Preferences) error) (*Window, error) {
@@ -47,12 +50,15 @@ func New(application fyne.App, store desktopconfig.Store, icon fyne.Resource, on
 	instance.browserPath = widget.NewEntry()
 	instance.browserURL = widget.NewEntry()
 	instance.launchAtLogin = widget.NewCheck("登录系统后在托盘后台运行", nil)
+	instance.advancedConfig = widget.NewMultiLineEntry()
+	instance.advancedConfig.Wrapping = fyne.TextWrapWord
 	instance.status = widget.NewLabel("")
 	instance.status.Wrapping = fyne.TextWrapWord
 
 	instance.browserPath.SetPlaceHolder("留空自动查找 Chrome、Edge、Chromium 或 Brave")
 	instance.browserURL.SetPlaceHolder("留空显示学校下发的完整资源导航页")
 	instance.password.SetPlaceHolder("留空保留已保存密码")
+	instance.advancedConfig.SetPlaceHolder("# 以 TOML 形式直接编辑 config.toml；保存即重新连接。常见字段见 README。")
 	instance.totpSecret.SetPlaceHolder("留空保留已保存 TOTP 密钥")
 
 	gatewayForm := widget.NewForm(
@@ -72,12 +78,15 @@ func New(application fyne.App, store desktopconfig.Store, icon fyne.Resource, on
 	policy := widget.NewCard("受管浏览器策略", "由桌面客户端强制执行", container.NewVBox(
 		widget.NewLabel("✓ 所有浏览器 HTTP/HTTPS 流量经私有 NWAFU Connect 代理"),
 		widget.NewLabel("✓ DNS 服务器地址由学校网关自动提供（DHCP / auto）"),
-		widget.NewLabel("✓ 浏览器关闭后后台连接保持，可从托盘重新打开"),
-		widget.NewLabel("✓ 使用独立且持久的 Chromium 资料目录"),
 	))
 	tabs := container.NewAppTabs(
 		container.NewTabItem("学校网关", container.NewVScroll(gatewayForm)),
 		container.NewTabItem("浏览器与后台", container.NewVScroll(container.NewVBox(browserForm, policy, instance.launchAtLogin))),
+		container.NewTabItem("高级设置", container.NewBorder(
+			widget.NewLabel("直接编辑 config.toml（TOML 格式）。保存即重新连接，密码等敏感字段也在此文件中。"),
+			widget.NewButtonWithIcon("恢复默认并重新加载", theme.ViewRefreshIcon(), instance.reloadAdvanced),
+			nil, nil, container.NewVScroll(instance.advancedConfig),
+		)),
 	)
 	tabs.SetTabLocation(container.TabLocationTop)
 	saveButton := widget.NewButton("保存并重新连接", instance.save)
@@ -128,6 +137,12 @@ func (w *Window) save() {
 		dialog.ShowError(err, w.window)
 		return
 	}
+	if raw := strings.TrimSpace(w.advancedConfig.Text); raw != "" {
+		if err := w.store.SaveRaw([]byte(raw)); err != nil {
+			dialog.ShowError(err, w.window)
+			return
+		}
+	}
 	if err := w.store.Save(configuration, preferences); err != nil {
 		dialog.ShowError(err, w.window)
 		return
@@ -167,7 +182,28 @@ func (w *Window) reload() error {
 	if editable.HasTOTP {
 		w.totpSecret.SetPlaceHolder("TOTP 密钥已保存；留空不修改")
 	}
+	if raw, err := w.store.LoadRaw(); err == nil {
+		w.advancedConfig.SetText(string(raw))
+	} else {
+		w.advancedConfig.SetText("")
+	}
 	return nil
+}
+
+// reloadAdvanced refreshes only the raw TOML editor from disk, used by the
+// "恢复默认并重新加载" button on the advanced tab.
+func (w *Window) reloadAdvanced() {
+	if raw, err := w.store.LoadRaw(); err == nil {
+		w.advancedConfig.SetText(string(raw))
+	} else {
+		dialog.ShowError(err, w.window)
+		return
+	}
+	if err := w.reload(); err != nil {
+		dialog.ShowError(err, w.window)
+		return
+	}
+	w.status.SetText("已从 config.toml 重新加载配置。")
 }
 
 func authTypeValue(label string) string {

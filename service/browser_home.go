@@ -104,12 +104,24 @@ details .address, details .address-static { padding-left: 28px; border-top-color
 .actions { display: flex; justify-content: center; margin-top: 24px; }
 #showMore { padding: 10px 18px; border: 1px solid #bed0c7; border-radius: 10px; color: var(--green); background: white; cursor: pointer; font-weight: 650; }
 #showMore:hover { border-color: var(--green-2); background: #f8fbf9; }
-.protocol-guide { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; margin-top: 20px; padding: 18px 20px; border: 1px solid #cfe0d8; border-radius: 15px; background: #edf6f2; }
+.protocol-toggle { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; padding: 7px 14px; border: 1px solid #cfe0d8; border-radius: 999px; color: var(--green-2); background: white; cursor: pointer; font-size: 12px; font-weight: 600; }
+.protocol-toggle:hover { background: #f3f8f5; }
+.protocol-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.protocol-toggle .chev { display: inline-block; transition: transform .18s ease; }
+.protocol-guide { display: none; margin-top: 12px; padding: 18px 20px; border: 1px solid #cfe0d8; border-radius: 15px; background: #edf6f2; }
+.protocol-guide.open { display: block; }
 .protocol-guide strong { display: block; margin-bottom: 3px; color: var(--green); }
 .protocol-guide p { margin: 0; color: #5e756b; font-size: 12px; }
 .protocol-guide code { display: block; overflow-x: auto; margin-top: 9px; padding: 8px 10px; border-radius: 7px; color: #dcece5; background: #173d31; white-space: nowrap; }
 .copy-button { padding: 9px 14px; border: 1px solid #afc9bd; border-radius: 9px; color: var(--green); background: white; cursor: pointer; font-weight: 650; white-space: nowrap; }
 .copy-button:hover { border-color: var(--green-2); }
+.card { cursor: default; }
+.card.has-url { cursor: pointer; }
+.card.has-url .card-main { cursor: pointer; }
+.card.has-url:active { transform: translateY(0); border-color: #9bb7aa; box-shadow: 0 4px 14px rgba(27,67,53,.1); }
+.card.has-url::after { content: "↗"; position: absolute; top: 12px; right: 14px; color: #b9ccc1; font-size: 14px; font-weight: 700; opacity: 0; transition: opacity .18s ease; }
+.card.has-url:hover::after { opacity: 1; }
+.card { position: relative; }
 .notice { display: grid; grid-template-columns: auto 1fr; gap: 14px; margin-top: 42px; padding: 20px; border: 1px solid #eadcb9; border-radius: 15px; background: #fffaf0; }
 .notice-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 10px; color: #765817; background: #f5e6bd; font-weight: 800; }
 .notice strong { display: block; margin-bottom: 3px; }
@@ -157,7 +169,10 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
     <input id="resourceSearch" type="search" placeholder="搜索资源名称、说明或地址…" autocomplete="off">
     <span class="shortcut">⌘ K</span>
   </label>
-  <section class="protocol-guide">
+  <div style="text-align:center;">
+    <button class="protocol-toggle" id="sshToggle" type="button" aria-expanded="false" aria-controls="sshGuide"><span class="chev">▸</span> SSH / SFTP 等 TCP 客户端接入</button>
+  </div>
+  <section class="protocol-guide" id="sshGuide" role="region" aria-labelledby="sshToggle">
     <div><strong>SSH / SFTP 等 TCP 客户端</strong><p>使用随应用打包的 stdio 代理助手，将任意 TCP 客户端接入当前 aTrust 会话：</p><code id="sshCommand">{{.SSHCommand}}</code></div>
     <button class="copy-button" type="button" data-copy="sshCommand">复制命令</button>
   </section>
@@ -166,7 +181,7 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
     <span id="resultCount">{{len .Resources}} 个结果</span>
   </div>
   <section id="resourceGrid" class="grid" aria-live="polite">
-    {{range .Resources}}<article class="card" data-search="{{.SearchText}}"><div class="card-main"><span class="resource-icon">R</span><span class="card-copy"><span class="resource-name">{{.Name}}</span>{{if .Description}}<span class="description">{{.Description}}</span>{{end}}</span></div>{{if .Primary.URL}}<a class="address" href="{{.Primary.URL}}" target="_blank" rel="noopener noreferrer"><span class="host">{{.Primary.Host}}</span><span class="meta">{{.Primary.Protocol}} · {{.Primary.Ports}}</span></a>{{else}}<div class="address-static"><span class="host">{{.Primary.Host}}</span><span class="meta">{{.Primary.Protocol}} · {{.Primary.Ports}}</span></div>{{end}}{{if .Additional}}<details><summary>另外 {{len .Additional}} 个下发地址</summary>{{range .Additional}}{{if .URL}}<a class="address" href="{{.URL}}" target="_blank" rel="noopener noreferrer"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></a>{{else}}<div class="address-static"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{end}}{{end}}</details>{{end}}</article>{{end}}
+    {{range .Resources}}<article class="card{{if .Primary.URL}} has-url{{end}}" data-search="{{.SearchText}}"{{if .Primary.URL}} data-url="{{.Primary.URL}}" tabindex="0" role="link"{{end}}><div class="card-main"><span class="resource-icon">R</span><span class="card-copy"><span class="resource-name">{{.Name}}</span>{{if .Description}}<span class="description">{{.Description}}</span>{{end}}</span></div>{{if .Primary.URL}}<div class="address" role="presentation"><span class="host">{{.Primary.Host}}</span><span class="meta">{{.Primary.Protocol}} · {{.Primary.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{.Primary.Host}}</span><span class="meta">{{.Primary.Protocol}} · {{.Primary.Ports}}</span></div>{{end}}{{if .Additional}}<details><summary>另外 {{len .Additional}} 个下发地址</summary>{{range .Additional}}{{if .URL}}<div class="address" data-url="{{.URL}}" role="link" tabindex="0"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{end}}{{end}}</details>{{end}}</article>{{end}}
   </section>
   <div id="emptyState" class="empty">没有找到匹配的授权资源，请尝试其他关键词。</div>
   <div class="actions"><button id="showMore" type="button">显示全部资源</button></div>
@@ -202,7 +217,8 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
     }
   });
   document.querySelectorAll("[data-copy]").forEach(button => {
-    button.addEventListener("click", async () => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
       const text = document.getElementById(button.dataset.copy).textContent;
       try {
         await navigator.clipboard.writeText(text);
@@ -216,6 +232,61 @@ footer { margin-top: 42px; color: #7b8a83; font-size: 12px; text-align: center; 
       }
       button.textContent = "已复制";
       setTimeout(() => { button.textContent = "复制命令"; }, 1500);
+    });
+  });
+  const sshToggle = document.getElementById("sshToggle");
+  const sshGuide = document.getElementById("sshGuide");
+  if (sshToggle && sshGuide) {
+    sshToggle.addEventListener("click", () => {
+      const open = sshGuide.classList.toggle("open");
+      sshToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+  function openResource(url, source) {
+    if (!url) return;
+    const dimmer = document.createElement("div");
+    dimmer.textContent = "正在通过安全隧道打开…";
+    dimmer.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 22px;border-radius:10px;background:#123f32;color:#fff;font-size:14px;box-shadow:0 8px 24px rgba(18,63,50,.35);z-index:9999;animation:fadeIn .15s ease;opacity:0;transition:opacity .18s ease;";
+    document.body.appendChild(dimmer);
+    requestAnimationFrame(() => { dimmer.style.opacity = "1"; });
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => {
+      dimmer.style.opacity = "0";
+      setTimeout(() => dimmer.remove(), 220);
+    }, 900);
+  }
+  document.querySelectorAll(".card").forEach(card => {
+    const open = () => openResource(card.dataset.url, card);
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("details") || event.target.closest("summary")) return;
+      if (!card.dataset.url) return;
+      event.preventDefault();
+      open();
+    });
+    card.addEventListener("keydown", (event) => {
+      if ((event.key === "Enter" || event.key === " ") && card.dataset.url) {
+        event.preventDefault();
+        open();
+      }
+    });
+  });
+  document.querySelectorAll(".address[data-url]").forEach(row => {
+    row.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openResource(row.dataset.url, row);
+    });
+    row.addEventListener("keydown", (event) => {
+      if ((event.key === "Enter" || event.key === " ") && row.dataset.url) {
+        event.preventDefault();
+        openResource(row.dataset.url, row);
+      }
     });
   });
   render();
