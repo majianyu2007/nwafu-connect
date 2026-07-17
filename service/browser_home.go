@@ -70,24 +70,19 @@ var browserHomeTemplate = template.Must(template.New("browser-home").Parse(`<!do
 }
 * { box-sizing: border-box; }
 html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-body {
-  margin: 0;
-  background: var(--paper);
-  background-image: linear-gradient(180deg, #eef4f0 0%, var(--paper) 280px);
-  color: var(--ink);
-  font: 14.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
+body { margin: 0; background: var(--paper); color: var(--ink); font: 14.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
 button, input { font: inherit; color: inherit; }
 .wrap { position: relative; width: min(1200px, calc(100% - 48px)); margin: 0 auto; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
-
 .hero {
   position: relative; overflow: hidden; color: #f6f9f7;
   background: linear-gradient(140deg, #0c2c23 0%, #163f32 55%, #1d5b46 100%);
 }
-.hero::before, .hero::after { content: ""; position: absolute; pointer-events: none; filter: blur(20px); }
-.hero::before { inset: auto -20% -60% auto; width: 60%; height: 160%; background: radial-gradient(closest-side, rgba(199,154,62,.20), transparent 70%); }
-.hero::after  { inset: 30% auto auto -10%; width: 36%; height: 120%; background: radial-gradient(closest-side, rgba(120,200,170,.16), transparent 70%); }
+/* Hero glow done with flat pseudo-elements, no filter: blur, so chrome
+   stops re-rasterising large blurred layers on every scroll frame. */
+.hero::before { content: ""; position: absolute; pointer-events: none; inset: auto 0 auto auto; width: 50%; height: 100%; background: radial-gradient(closest-side at 80% 80%, rgba(199,154,62,.18), transparent 70%); }
+/* Second accent glow kept as a single flat radial; no blur filter. */
+.hero::after { content: ""; position: absolute; pointer-events: none; inset: 30% 0 auto auto; width: 36%; height: 60%; background: radial-gradient(closest-side at 30% 50%, rgba(120,200,170,.14), transparent 70%); }
 nav { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 24px 0 0; color: #e9f3ee; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.01em; font-size: 15px; }
 .mark { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 9px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.16); font-size: 15px; font-weight: 700; }
@@ -97,7 +92,7 @@ nav { position: relative; display: flex; align-items: center; justify-content: s
 .eyebrow { margin-bottom: 14px; color: var(--gold); font-size: 11px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; }
 h1 { max-width: 720px; margin: 0; font-size: clamp(28px, 4vw, 42px); line-height: 1.12; letter-spacing: -.02em; font-weight: 600; }
 .lead { max-width: 640px; margin: 16px 0 0; color: #b6ccc2; font-size: 14.5px; line-height: 1.65; }
-.total { min-width: 132px; padding: 18px 22px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.06); backdrop-filter: blur(10px); }
+.total { min-width: 132px; padding: 18px 22px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.10); }
 .total strong { display: block; font-size: 30px; font-weight: 700; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .total span { display: block; margin-top: 6px; color: #b6ccc2; font-size: 12px; }
 
@@ -144,15 +139,18 @@ h2 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
   position: relative; min-width: 0; overflow: hidden;
   border: 1px solid var(--line); border-radius: var(--radius); background: var(--card);
   transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
-  animation: cardIn .32s ease backwards;
+  animation: cardIn .28s ease backwards;
+  content-visibility: auto;
+  contain-intrinsic-size: 200px;
 }
-@keyframes cardIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-.card:hover { transform: translateY(-1px); border-color: #c5d6cf; box-shadow: var(--shadow-hover); }
+.card.has-additional { cursor: pointer; }
 .card.has-url { cursor: pointer; }
 .card.has-url:focus-visible { outline: 0; border-color: var(--green-2); box-shadow: 0 0 0 3px rgba(26,96,73,.18); }
+.card.has-url:hover { transform: translateY(-1px); border-color: #c5d6cf; box-shadow: var(--shadow-hover); }
 .card.has-url:active { transform: translateY(0); box-shadow: var(--shadow); }
 .card-main { padding: 16px 16px 14px; }
 .card-row { display: flex; gap: 12px; align-items: flex-start; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 .resource-icon {
   display: grid; flex: 0 0 auto; width: 40px; height: 40px; place-items: center; border-radius: 11px;
   background: linear-gradient(140deg, #eef5f1 0%, #d9ecdf 100%);
@@ -177,6 +175,9 @@ h2 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
 .host { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; font-feature-settings: "tnum" 1; }
 .meta { color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
+.address-hint { cursor: pointer; }
+.address-hint:hover { background: #ecf3ee; }
+.address-hint .meta { color: var(--green-2); font-weight: 500; }
 details { border-top: 1px solid var(--hairline); background: var(--paper-2); }
 summary { padding: 9px 16px; color: var(--muted); cursor: pointer; font-size: 12px; list-style: none; display: flex; align-items: center; gap: 6px; }
 summary::-webkit-details-marker { display: none; }
@@ -258,7 +259,7 @@ footer { margin-top: 44px; padding-bottom: 8px; color: var(--faint); font-size: 
     <span id="resultCount">{{len .Resources}} 个结果</span>
   </div>
   <section id="resourceGrid" class="grid" aria-live="polite">
-    {{range $i, $r := .Resources}}<article class="card{{if $r.Primary.URL}} has-url{{end}}" data-search="{{$r.SearchText}}" style="animation-delay: {{$i}}ms;"{{if $r.Primary.URL}} data-url="{{$r.Primary.URL}}" tabindex="0" role="link"{{end}}><div class="card-main"><div class="card-row"><span class="resource-icon" aria-hidden="true">{{$r.Monogram}}</span><div class="card-copy"><span class="resource-name">{{$r.Name}}</span>{{if $r.Kind}}<span class="type-badge kind-{{$r.Kind}}"><span class="dot"></span>{{$r.KindLabel}}</span>{{end}}{{if $r.Description}}<span class="description">{{$r.Description}}</span>{{end}}</div></div></div>{{if $r.Primary.URL}}<div class="address" data-url="{{$r.Primary.URL}}" role="link" tabindex="0"><span class="host">{{$r.Primary.Host}}</span><span class="meta">{{$r.Primary.Protocol}} · {{$r.Primary.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{$r.Primary.Host}}</span><span class="meta">{{$r.Primary.Protocol}} · {{$r.Primary.Ports}}</span></div>{{end}}{{if $r.Additional}}<details><summary>另外 {{len $r.Additional}} 个下发地址</summary>{{range $r.Additional}}{{if .URL}}<div class="address" data-url="{{.URL}}" role="link" tabindex="0"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{end}}{{end}}</details>{{end}}{{if $r.Primary.URL}}<svg class="open-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 11 11 5"/><path d="M6 5h5v5"/></svg>{{end}}</article>{{end}}
+    {{range $i, $r := .Resources}}<article class="card{{if $r.Primary.URL}} has-url{{end}}{{if $r.Additional}} has-additional{{end}}" data-search="{{$r.SearchText}}" style="animation-delay: {{$i}}ms;"{{if $r.Primary.URL}} data-url="{{$r.Primary.URL}}" tabindex="0" role="link"{{end}}><div class="card-main"><div class="card-row"><span class="resource-icon" aria-hidden="true">{{$r.Monogram}}</span><div class="card-copy"><span class="resource-name">{{$r.Name}}</span>{{if $r.Kind}}<span class="type-badge kind-{{$r.Kind}}"><span class="dot"></span>{{$r.KindLabel}}</span>{{end}}{{if $r.Description}}<span class="description">{{$r.Description}}</span>{{end}}</div></div></div>{{if $r.Primary.URL}}<div class="address" data-url="{{$r.Primary.URL}}" role="link" tabindex="0"><span class="host">{{$r.Primary.Host}}</span><span class="meta">{{$r.Primary.Protocol}} · {{$r.Primary.Ports}}</span></div>{{else}}{{if $r.Additional}}<div class="address-static address-hint"><span class="host">{{$r.Primary.Host}}</span><span class="meta">点击展开 ↓</span></div>{{else}}<div class="address-static"><span class="host">{{$r.Primary.Host}}</span><span class="meta">{{$r.Primary.Protocol}} · {{$r.Primary.Ports}}</span></div>{{end}}{{end}}{{if $r.Additional}}<details><summary>另外 {{len $r.Additional}} 个下发地址</summary>{{range $r.Additional}}{{if .URL}}<div class="address" data-url="{{.URL}}" role="link" tabindex="0"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{end}}{{end}}</details>{{end}}{{if $r.Primary.URL}}<svg class="open-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 11 11 5"/><path d="M6 5h5v5"/></svg>{{end}}</article>{{end}}
   </section>
   <div id="emptyState" class="empty">
     <svg class="empty-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
@@ -278,18 +279,19 @@ footer { margin-top: 44px; padding-bottom: 8px; color: var(--faint); font-size: 
   const cards = Array.from(document.querySelectorAll(".card"));
   const count = document.getElementById("resultCount");
   const empty = document.getElementById("emptyState");
-  const more = document.getElementById("showMore");
-  const initialLimit = 18;
-  let expanded = false;
   function render() {
     const query = input.value.trim().toLowerCase();
-    const matches = cards.filter(card => card.dataset.search.toLowerCase().includes(query));
-    cards.forEach(card => { card.style.display = "none"; });
+    const matches = query ? cards.filter(card => card.dataset.search.toLowerCase().includes(query)) : cards;
+    const total = matches.length;
     const visible = query || expanded ? matches : matches.slice(0, initialLimit);
-    visible.forEach(card => { card.style.display = ""; });
-    count.textContent = matches.length + " 个结果";
-    empty.style.display = matches.length ? "none" : "block";
-    more.style.display = !query && matches.length > initialLimit ? "inline-block" : "none";
+    const visibleSet = new Set(visible);
+    for (const card of cards) {
+      const shouldShow = visibleSet.has(card);
+      if (card.hidden !== !shouldShow) card.hidden = !shouldShow;
+    }
+    count.textContent = total + " 个结果";
+    empty.style.display = total ? "none" : "block";
+    more.style.display = !query && cards.length > initialLimit ? "inline-block" : "none";
     more.textContent = expanded ? "收起资源" : "显示全部资源";
   }
   input.addEventListener("input", render);
@@ -344,16 +346,19 @@ footer { margin-top: 44px; padding-bottom: 8px; color: var(--faint); font-size: 
     setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => toast.remove(), 220); }, 900);
   }
   document.querySelectorAll(".card").forEach(card => {
-    const open = () => openResource(card.dataset.url);
+    const details = card.querySelector("details");
     card.addEventListener("click", (event) => {
       if (event.target.closest("details") || event.target.closest("summary")) return;
-      if (!card.dataset.url) return;
-      event.preventDefault(); open();
+      if (event.target.closest(".address")) return;
+      if (card.dataset.url) { event.preventDefault(); openResource(card.dataset.url); return; }
+      // Range-only primary host: reveal the additional issued addresses so the
+      // user can reach the discrete URLs the gateway actually authorized.
+      if (details) { details.open = !details.open; }
     });
     card.addEventListener("keydown", (event) => {
-      if ((event.key === "Enter" || event.key === " ") && card.dataset.url) {
-        event.preventDefault(); open();
-      }
+      if (event.key !== "Enter" && event.key !== " ") return;
+      if (card.dataset.url) { event.preventDefault(); openResource(card.dataset.url); }
+      else if (details) { event.preventDefault(); details.open = !details.open; }
     });
   });
   document.querySelectorAll(".address[data-url]").forEach(row => {
