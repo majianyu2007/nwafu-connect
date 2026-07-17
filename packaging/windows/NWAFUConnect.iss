@@ -5,7 +5,7 @@
 #define OutputDir "dist"
 #endif
 #ifndef Version
-#define Version "1.3.0"
+#define Version "1.4.0"
 #endif
 
 [Setup]
