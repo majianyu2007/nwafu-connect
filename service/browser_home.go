@@ -504,10 +504,11 @@ func portRange(minimum, maximum int) string {
 	return fmt.Sprintf("%d–%d", minimum, maximum)
 }
 
-// resourceMonogram derives a short (1-2 character) badge label from a resource
-// name. It strips common Chinese suffixes like 服务器/系统/平台/网站, prefers the
-// first two CJK characters when present, and falls back to uppercase ASCII
-// initials for domain-like or latin names. Pure IP addresses collapse to "IP".
+// resourceMonogram derives a short (1-2 character) badge label shown inside
+// the resource icon. The full resource name is still displayed as the card
+// title; this is only the 2-glyph badge. It takes the first two CJK runes of
+// the name, falls back to uppercase ASCII initials for latin/domain-like
+// names, and collapses pure IP addresses to "IP".
 func resourceMonogram(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -516,39 +517,25 @@ func resourceMonogram(name string) string {
 	if net.ParseIP(name) != nil {
 		return "IP"
 	}
-	suffixes := []string{"管理系统", "查询系统", "考试系统", "学习系统", "服务器", "系统", "平台", "网站", "网页", "服务", "门户", "工具", "中心"}
-	stem := name
-	for _, suffix := range suffixes {
-		if strings.HasSuffix(stem, suffix) && len([]rune(stem)) > len([]rune(suffix)) {
-			stem = strings.TrimSuffix(stem, suffix)
-			break
-		}
-	}
-	if stem == "" {
-		stem = name
-	}
 	var cjk []rune
-	for _, r := range stem {
+	for _, r := range name {
 		if r >= 0x4E00 && r <= 0x9FFF {
 			cjk = append(cjk, r)
 			if len(cjk) == 2 {
-				break
+				return string(cjk)
 			}
 		}
-	}
-	if len(cjk) == 2 {
-		return string(cjk)
 	}
 	if len(cjk) == 1 {
 		return string(cjk)
 	}
-	parts := strings.FieldsFunc(stem, func(r rune) bool {
+	parts := strings.FieldsFunc(name, func(r rune) bool {
 		return r == ' ' || r == '.' || r == '-' || r == '_' || r == '/' || r == '@' || r == ':'
 	})
 	if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
 		return strings.ToUpper(string(parts[0][0]) + string(parts[1][0]))
 	}
-	runes := []rune(stem)
+	runes := []rune(name)
 	if len(runes) >= 2 {
 		return strings.ToUpper(string(runes[:2]))
 	}
