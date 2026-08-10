@@ -2,15 +2,20 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/majianyu2007/nwafu-connect/log"
 )
+
+const captchaTokenPlaceholder = "__NWAFU_CAPTCHA_FORM_TOKEN__"
 
 const captchaPageHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -288,7 +293,7 @@ function submitClicks() {
     renderStatus();
     alert(tr('networkError'));
   };
-  xhr.send('code=' + encodeURIComponent(payload));
+  xhr.send('token=` + captchaTokenPlaceholder + `&code=' + encodeURIComponent(payload));
   return false;
 }
 
@@ -301,28 +306,70 @@ applyLang();
 // image in the user's browser and waits for the user to click on character
 // positions and submit the coordinates.
 func serveCaptchaInBrowser(imgData []byte, timeout time.Duration) (string, error) {
+	token, err := newLocalFormToken()
+	if err != nil {
+		return "", err
+	}
+	pageHTML := strings.Replace(captchaPageHTML, captchaTokenPlaceholder, token, 1)
 	resultCh := make(chan string, 1)
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		setCaptchaPageHeaders(w.Header())
+		if !isLoopbackRequestHost(r.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(captchaPageHTML))
+		_, _ = w.Write([]byte(pageHTML))
 	})
 
 	mux.HandleFunc("/captcha.img", func(w http.ResponseWriter, r *http.Request) {
+		setCaptchaPageHeaders(w.Header())
+		if !isLoopbackRequestHost(r.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		contentType := http.DetectContentType(imgData)
 		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Write(imgData)
+		_, _ = w.Write(imgData)
 	})
 
 	mux.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
+		setCaptchaPageHeaders(w.Header())
+		if !isLoopbackRequestHost(r.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		code := r.FormValue("code")
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(r.PostForm.Get("token")), []byte(token)) != 1 {
+			http.Error(w, "invalid form token", http.StatusForbidden)
+			return
+		}
+		code := r.PostForm.Get("code")
 		if code == "" {
 			http.Error(w, "empty code", http.StatusBadRequest)
 			return
@@ -346,24 +393,54 @@ func serveCaptchaInBrowser(imgData []byte, timeout time.Duration) (string, error
 		return "", fmt.Errorf("failed to start captcha server: %w", err)
 	}
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       15 * time.Second,
+	}
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownContext); err != nil {
+			_ = srv.Close()
+		}
+	}()
 
-	go srv.Serve(listener)
+	serveErrCh := make(chan error, 1)
+	go func() {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErrCh <- err
+		}
+	}()
 
 	addr := fmt.Sprintf("http://%s", listener.Addr().String())
 	log.Printf("Captcha server started at %s", addr)
 
 	openBrowser(addr)
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case code := <-resultCh:
 		log.Println("Captcha code received from browser")
-		srv.Shutdown(context.Background())
 		return code, nil
-	case <-time.After(timeout):
-		srv.Shutdown(context.Background())
+	case err := <-serveErrCh:
+		return "", fmt.Errorf("captcha server failed: %w", err)
+	case <-timer.C:
 		return "", fmt.Errorf("captcha input timed out after %v", timeout)
 	}
+}
+
+func setCaptchaPageHeaders(header http.Header) {
+	header.Set("Cache-Control", "no-store, max-age=0")
+	header.Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+	header.Set("Cross-Origin-Opener-Policy", "same-origin")
+	header.Set("Cross-Origin-Resource-Policy", "same-origin")
+	header.Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), usb=()")
+	header.Set("Referrer-Policy", "no-referrer")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("X-Frame-Options", "DENY")
 }
 
 // openBrowser tries to open the given URL in the system's default browser.
@@ -382,5 +459,11 @@ func openBrowser(url string) {
 	}
 	if err := cmd.Start(); err != nil {
 		log.Printf("Failed to open browser: %v. Please visit: %s", err, url)
+		return
 	}
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			log.DebugPrintf("Browser opener exited: %v", err)
+		}
+	}()
 }

@@ -51,5 +51,9 @@ func (p UDPPacket) ResetChecksum(psum uint32) {
 }
 
 func (p UDPPacket) Valid() bool {
-	return len(p) >= UDPHeaderSize && uint16(len(p)) >= p.Length()
+	if len(p) < UDPHeaderSize {
+		return false
+	}
+	length := int(p.Length())
+	return length >= UDPHeaderSize && length <= len(p)
 }

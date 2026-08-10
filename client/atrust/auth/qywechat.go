@@ -457,7 +457,12 @@ func serveQYWechatPage(imageData []byte) (*qyWechatPageServer, error) {
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = io.WriteString(w, qyWechatStatusScript)
 	})
-	page.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	page.server = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       15 * time.Second,
+	}
 	go func() {
 		if err := page.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("Enterprise WeChat QR code server failed: %v", err)
@@ -481,7 +486,9 @@ func (s *qyWechatPageServer) getStatus() qyWechatPageStatus {
 func (s *qyWechatPageServer) close() {
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = s.server.Shutdown(shutdownContext)
+	if err := s.server.Shutdown(shutdownContext); err != nil {
+		_ = s.server.Close()
+	}
 }
 
 func (s *qyWechatPageServer) closeAfter(delay time.Duration) {

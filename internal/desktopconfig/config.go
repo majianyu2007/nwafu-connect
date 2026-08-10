@@ -75,12 +75,20 @@ func (s Store) LoadRaw() ([]byte, error) {
 	return document.Bytes(), nil
 }
 
+// MergeRaw decodes raw TOML over an existing configuration so omitted keys,
+// including saved credentials, retain their current values.
+func (s Store) MergeRaw(configuration configs.ConfigTOML, payload []byte) (configs.ConfigTOML, error) {
+	if err := toml.Unmarshal(payload, &configuration); err != nil {
+		return configs.ConfigTOML{}, fmt.Errorf("validate desktop configuration: %w", err)
+	}
+	return configuration, nil
+}
+
 // SaveRaw persists raw TOML bytes as the desktop configuration after validating
 // that it decodes into a ConfigTOML.
 func (s Store) SaveRaw(payload []byte) error {
-	var decoded configs.ConfigTOML
-	if err := toml.Unmarshal(payload, &decoded); err != nil {
-		return fmt.Errorf("validate desktop configuration: %w", err)
+	if _, err := s.MergeRaw(s.defaults(), payload); err != nil {
+		return err
 	}
 	return writePrivateFile(s.ConfigPath, payload)
 }
@@ -135,8 +143,20 @@ func writePrivateFile(path string, payload []byte) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close private configuration file: %w", err)
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := replaceFile(temporaryPath, path); err != nil {
 		return fmt.Errorf("publish private configuration file: %w", err)
 	}
 	return nil
+}
+
+func replaceFile(source, destination string) error {
+	if err := os.Rename(source, destination); err == nil {
+		return nil
+	} else if _, statErr := os.Stat(destination); statErr != nil {
+		return err
+	}
+	if err := os.Remove(destination); err != nil {
+		return err
+	}
+	return os.Rename(source, destination)
 }

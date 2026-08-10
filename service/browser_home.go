@@ -37,8 +37,12 @@ type browserHomeResource struct {
 }
 
 type browserHomeData struct {
-	Resources  []browserHomeResource
-	SSHCommand string
+	Resources       []browserHomeResource
+	SSHCommand      string
+	SSHCommandShell string
+	HasMore         bool
+	InitialLimit    int
+	Total           int
 }
 
 var browserHomeTemplate = template.Must(template.New("browser-home").Parse(`<!doctype html>
@@ -46,271 +50,435 @@ var browserHomeTemplate = template.Must(template.New("browser-home").Parse(`<!do
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NWAFU Connect · 校内资源门户</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%230f4233'/><text x='12' y='17' font-family='-apple-system,Segoe UI,sans-serif' font-size='14' font-weight='700' text-anchor='middle' fill='%23ffffff'>N</text></svg>">
+<title>NWAFU Connect · 校内资源</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%230d4f3c'/><text x='12' y='17' font-family='-apple-system,Segoe UI,sans-serif' font-size='14' font-weight='700' text-anchor='middle' fill='%23ffffff'>N</text></svg>">
 <style>
 :root {
   color-scheme: light;
-  --ink: #15231e;
-  --muted: #6a7972;
-  --faint: #8d9994;
-  --line: #e3ece8;
-  --hairline: #edf2f0;
-  --paper: #f5f8f6;
-  --paper-2: #fbfdfc;
-  --card: #ffffff;
-  --green: #0f4233;
-  --green-2: #1a6049;
-  --green-soft: #eaf3ef;
-  --green-soft-2: #d8ebdf;
-  --shadow: 0 1px 3px rgba(15, 66, 51, .05), 0 6px 18px rgba(15, 66, 51, .04);
-  --shadow-hover: 0 2px 4px rgba(15, 66, 51, .06), 0 12px 28px rgba(15, 66, 51, .08);
-  --radius: 14px;
-  --gold: #c79a3e;
+  --brand: #0d4f3c;
+  --brand-strong: #083b2d;
+  --brand-soft: #e5f0eb;
+  --brand-faint: #f1f7f4;
+  --ink: #17251f;
+  --muted: #5f7068;
+  --quiet: #576861;
+  --line: #dbe6e1;
+  --line-soft: #eaf0ed;
+  --canvas: #f2f6f4;
+  --surface: #ffffff;
+  --radius-surface: 16px;
+  --radius-control: 10px;
+  --shadow-toolbar: 0 10px 30px rgba(8, 59, 45, .10);
+  --shadow-card: 0 8px 24px rgba(8, 59, 45, .06);
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-body { margin: 0; background: var(--paper); color: var(--ink); font: 14.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-button, input { font: inherit; color: inherit; }
-.wrap { position: relative; width: min(1200px, calc(100% - 48px)); margin: 0 auto; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
-.hero {
-  position: relative; overflow: hidden; color: #f6f9f7;
-  background: linear-gradient(140deg, #0c2c23 0%, #163f32 55%, #1d5b46 100%);
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
-/* Hero glow done with flat pseudo-elements, no filter: blur, so chrome
-   stops re-rasterising large blurred layers on every scroll frame. */
-.hero::before { content: ""; position: absolute; pointer-events: none; inset: auto 0 auto auto; width: 50%; height: 100%; background: radial-gradient(closest-side at 80% 80%, rgba(199,154,62,.18), transparent 70%); }
-/* Second accent glow kept as a single flat radial; no blur filter. */
-.hero::after { content: ""; position: absolute; pointer-events: none; inset: 30% 0 auto auto; width: 36%; height: 60%; background: radial-gradient(closest-side at 30% 50%, rgba(120,200,170,.14), transparent 70%); }
-nav { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 24px 0 0; color: #e9f3ee; }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.01em; font-size: 15px; }
-.mark { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 9px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.16); font-size: 15px; font-weight: 700; }
-.connected { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.06); color: #d6e6dd; font-size: 12px; }
-.connected::before { width: 7px; height: 7px; border-radius: 50%; background: #6cd49a; box-shadow: 0 0 0 3px rgba(108,212,154,.18); content: ""; }
-.intro { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 40px; align-items: end; padding: 56px 0 70px; }
-.eyebrow { margin-bottom: 14px; color: var(--gold); font-size: 11px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; }
-h1 { max-width: 720px; margin: 0; font-size: clamp(28px, 4vw, 42px); line-height: 1.12; letter-spacing: -.02em; font-weight: 600; }
-.lead { max-width: 640px; margin: 16px 0 0; color: #b6ccc2; font-size: 14.5px; line-height: 1.65; }
-.total { min-width: 132px; padding: 18px 22px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.10); }
-.total strong { display: block; font-size: 30px; font-weight: 700; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.total span { display: block; margin-top: 6px; color: #b6ccc2; font-size: 12px; }
-
-.content { padding: 0 0 80px; }
-.search-panel {
-  position: relative; display: flex; gap: 12px; align-items: center;
-  margin: -34px auto 0; padding: 14px 18px;
-  border: 1px solid rgba(15,66,51,.08); border-radius: 16px;
-  background: white; box-shadow: 0 8px 28px rgba(15,66,51,.10);
+button, input { color: inherit; font: inherit; }
+button, a { touch-action: manipulation; }
+a { color: inherit; }
+.wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+.skip-link {
+  position: fixed; z-index: 1000; top: 8px; left: 8px; padding: 8px 12px;
+  border-radius: 8px; background: white; color: var(--brand); transform: translateY(-150%);
 }
-.search-icon { flex: 0 0 auto; color: #7a8983; display: grid; place-items: center; }
-#resourceSearch { width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 15px; }
-#resourceSearch::placeholder { color: #99a8a1; }
-.shortcut { padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; color: #859390; background: #f4f7f5; font-size: 11px; letter-spacing: .02em; }
+.skip-link:focus { transform: none; }
 
-.protocol-toggle-wrap { text-align: center; margin-top: 18px; }
-.protocol-toggle {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 13px; border: 1px solid var(--line); border-radius: 999px;
-  color: var(--green-2); background: white; cursor: pointer;
-  font-size: 12px; font-weight: 500;
-  transition: background .15s ease, border-color .15s ease;
+.site-header { background: var(--brand-strong); color: white; }
+.site-header .wrap {
+  display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 20px;
 }
-.protocol-toggle:hover { background: var(--green-soft); border-color: var(--green-soft-2); }
-.protocol-toggle .chev { transition: transform .18s ease; }
-.protocol-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
-.protocol-guide { display: none; margin: 10px auto 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper-2); max-width: 980px; }
-.protocol-guide.open { display: block; }
-.protocol-guide strong { display: block; margin-bottom: 4px; color: var(--green); font-size: 13px; font-weight: 600; }
-.protocol-guide p { margin: 0; color: var(--muted); font-size: 12px; }
-.protocol-guide code { display: block; overflow-x: auto; margin-top: 10px; padding: 10px 12px; border-radius: 8px; color: #cfe6dd; background: #133025; font: 12px/1.5 "SF Mono", Menlo, Consolas, monospace; white-space: nowrap; }
-.copy-button { margin-top: 10px; padding: 7px 13px; border: 1px solid var(--green-soft-2); border-radius: 8px; color: var(--green); background: white; cursor: pointer; font-size: 12px; font-weight: 500; transition: background .15s ease, border-color .15s ease, color .15s ease; }
-.copy-button:hover { background: var(--green-soft); border-color: var(--green-2); }
-.copy-button.copied { background: var(--green); color: white; border-color: var(--green); }
-
-.section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin: 48px 0 18px; }
-h2 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
-.section-head p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
-#resultCount { color: var(--faint); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-
-.card {
-  position: relative; min-width: 0; overflow: hidden;
-  border: 1px solid var(--line); border-radius: var(--radius); background: var(--card);
-  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
-  animation: cardIn .28s ease backwards;
-  content-visibility: auto;
-  contain-intrinsic-size: 200px;
+.brand { display: flex; align-items: center; gap: 11px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.brand-mark {
+  display: grid; width: 34px; height: 34px; place-items: center;
+  border: 1px solid rgba(255,255,255,.22); border-radius: 10px;
+  background: rgba(255,255,255,.10); font-weight: 750;
 }
-.card.has-additional { cursor: pointer; }
-.card.has-url { cursor: pointer; }
-.card.has-url:focus-visible { outline: 0; border-color: var(--green-2); box-shadow: 0 0 0 3px rgba(26,96,73,.18); }
-.card.has-url:hover { transform: translateY(-1px); border-color: #c5d6cf; box-shadow: var(--shadow-hover); }
-.card.has-url:active { transform: translateY(0); box-shadow: var(--shadow); }
-.card-main { padding: 16px 16px 14px; }
-.card-row { display: flex; gap: 12px; align-items: flex-start; }
-@keyframes cardIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-.resource-icon {
-  display: grid; flex: 0 0 auto; width: 40px; height: 40px; place-items: center; border-radius: 11px;
-  background: linear-gradient(140deg, #eef5f1 0%, #d9ecdf 100%);
-  color: var(--green); font-size: 15px; font-weight: 700; letter-spacing: -.01em;
-  box-shadow: inset 0 0 0 1px rgba(15,66,51,.04);
+.connection-state { display: inline-flex; align-items: center; gap: 8px; color: #d9e8e1; font-size: 13px; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: #72d49e; box-shadow: 0 0 0 3px rgba(114,212,158,.16); }
+
+main { padding-bottom: 64px; }
+.portal-intro {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 40px;
+  padding: 38px 0 30px;
 }
-.card-copy { min-width: 0; flex: 1; }
-.resource-name { display: block; overflow: hidden; font-weight: 600; font-size: 14.5px; letter-spacing: -.005em; text-overflow: ellipsis; white-space: nowrap; }
-.type-badge { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 500; letter-spacing: .04em; background: #eef2f0; color: var(--muted); text-transform: uppercase; }
-.type-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.type-badge.kind-web { color: #1a6049; background: #e6f1ea; }
-.type-badge.kind-ssh { color: #b86a23; background: #f8eede; }
-.type-badge.kind-tcp { color: #5a6770; background: #edf1f3; }
-.type-badge.kind-all { color: #6246c2; background: #ecedf8; }
-.type-badge.kind-mix { color: #1a6049; background: #e6f1ea; }
-.description { display: -webkit-box; overflow: hidden; margin-top: 6px; color: var(--muted); font-size: 12.5px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.session-label { margin: 0 0 6px; color: var(--brand); font-size: 13px; font-weight: 650; }
+h1 { margin: 0; font-size: clamp(30px, 4vw, 43px); line-height: 1.14; letter-spacing: -.035em; font-weight: 680; }
+.intro-copy { max-width: 660px; margin: 12px 0 0; color: var(--muted); font-size: 15px; }
+.resource-total { min-width: 128px; padding-left: 24px; border-left: 1px solid var(--line); }
+.resource-total strong { display: block; color: var(--brand); font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
+.resource-total span { display: block; margin-top: 7px; color: var(--muted); font-size: 13px; }
 
-.address, .address-static { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 16px; border-top: 1px solid var(--hairline); color: var(--green-2); background: var(--paper-2); font-size: 12px; }
-.address { cursor: pointer; transition: background .14s ease; }
-.address:hover { background: #ecf3ee; }
-.address[data-url]:focus-visible { outline: 0; background: #e3efea; }
-.host { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; font-feature-settings: "tnum" 1; }
-.meta { color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
-
-.address-hint { cursor: pointer; }
-.address-hint:hover { background: #ecf3ee; }
-.address-hint .meta { color: var(--green-2); font-weight: 500; }
-details { border-top: 1px solid var(--hairline); background: var(--paper-2); }
-summary { padding: 9px 16px; color: var(--muted); cursor: pointer; font-size: 12px; list-style: none; display: flex; align-items: center; gap: 6px; }
-summary::-webkit-details-marker { display: none; }
-summary::before { content: ""; width: 0; height: 0; border: 4px solid transparent; border-left-color: currentColor; opacity: .6; }
-details[open] summary::before { transform: rotate(90deg); }
-details .address, details .address-static { padding-left: 28px; border-top-color: #f0f4f2; }
-
-.card.has-url .open-chev { position: absolute; top: 12px; right: 14px; width: 16px; height: 16px; color: #b3c5bc; opacity: 0; transition: opacity .18s ease, transform .18s ease; }
-.card.has-url:hover .open-chev, .card.has-url:focus-visible .open-chev { opacity: 1; transform: translate(2px, -2px); }
-
-.empty { display: none; padding: 56px 24px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--muted); text-align: center; background: var(--paper-2); }
-.empty-icon { display: block; margin: 0 auto 12px; color: #b7c7bf; }
-.empty strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 15px; font-weight: 600; }
-
-.actions { display: flex; justify-content: center; margin-top: 26px; }
-#showMore { padding: 9px 18px; border: 1px solid var(--line); border-radius: 10px; color: var(--green); background: white; cursor: pointer; font-weight: 500; font-size: 13px; transition: background .15s ease, border-color .15s ease; }
-#showMore:hover { background: var(--green-soft); border-color: var(--green-soft-2); }
-
-.notice { display: grid; grid-template-columns: auto 1fr; gap: 14px; margin-top: 44px; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-2); }
-.notice-icon { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 9px; color: var(--green-2); background: var(--green-soft); }
-.notice strong { display: block; margin-bottom: 3px; font-size: 13.5px; font-weight: 600; }
-.notice p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
-
-footer { margin-top: 44px; padding-bottom: 8px; color: var(--faint); font-size: 12px; text-align: center; }
-
-@media (max-width: 850px) {
-  .intro { grid-template-columns: 1fr; gap: 24px; padding-top: 36px; }
-  .total { width: fit-content; }
+.discovery-tools {
+  position: sticky; z-index: 20; top: 12px;
+  display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 16px; align-items: end;
+  padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-surface);
+  background: rgba(255,255,255,.98); box-shadow: var(--shadow-toolbar);
 }
-@media (max-width: 560px) {
-  .wrap { width: min(100% - 28px, 1200px); }
-  nav { padding-top: 18px; }
-  .connected { font-size: 0; }
-  .connected::after { content: "已连接"; font-size: 12px; }
-  .intro { padding-bottom: 72px; }
+.search-group label, .filter-label {
+  display: block; margin: 0 0 6px 2px; color: var(--muted); font-size: 12px; font-weight: 600;
+}
+.search-control {
+  display: flex; min-height: 44px; align-items: center; gap: 10px;
+  padding: 0 12px; border: 1px solid #cddbd5; border-radius: var(--radius-control); background: white;
+}
+.search-control:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(13,79,60,.12); }
+.search-icon { display: grid; flex: 0 0 auto; color: var(--quiet); }
+#resourceSearch { width: 100%; min-width: 0; min-height: 42px; border: 0; outline: 0; background: transparent; font-size: 16px; }
+#resourceSearch::placeholder { color: #87958f; }
+.shortcut {
+  flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--canvas); color: var(--quiet); font-size: 11px; white-space: nowrap;
+}
+.filters { display: flex; gap: 6px; }
+.filter-button {
+  min-height: 44px; padding: 0 13px; border: 1px solid var(--line); border-radius: 999px;
+  background: white; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 550;
+}
+.filter-button:hover { border-color: #b9cec5; background: var(--brand-faint); color: var(--brand); }
+.filter-button[aria-pressed="true"] { border-color: var(--brand); background: var(--brand); color: white; }
+.filter-button:focus-visible, .secondary-button:focus-visible, .copy-button:focus-visible, summary:focus-visible {
+  outline: 3px solid #2e705c; outline-offset: 2px;
+}
+
+.resource-section { margin-top: 34px; }
+.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
+.section-heading h2 { margin: 0; font-size: 20px; line-height: 1.3; letter-spacing: -.015em; }
+.section-heading p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+#resultCount { color: var(--quiet); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.resource-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.resource-card {
+  display: flex; min-width: 0; flex-direction: column; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--radius-surface); background: var(--surface);
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+.resource-card:hover { border-color: #bfd1c9; box-shadow: var(--shadow-card); }
+.card-body { display: flex; min-height: 128px; flex: 1; flex-direction: column; padding: 17px 17px 14px; }
+.card-heading { display: flex; gap: 12px; align-items: flex-start; }
+.resource-mark {
+  display: grid; flex: 0 0 auto; width: 42px; height: 42px; place-items: center;
+  border-radius: 12px; background: var(--brand-soft); color: var(--brand); font-size: 14px; font-weight: 720;
+}
+.title-group { min-width: 0; }
+.resource-name { margin: 0; overflow-wrap: anywhere; font-size: 15px; line-height: 1.42; font-weight: 650; letter-spacing: -.005em; }
+.type-badge {
+  display: inline-flex; margin-top: 6px; padding: 2px 8px; border-radius: 999px;
+  background: #edf2f0; color: var(--muted); font-size: 10.5px; font-weight: 650; letter-spacing: .04em;
+}
+.type-badge.kind-web, .type-badge.kind-all, .type-badge.kind-mix { background: var(--brand-soft); color: var(--brand); }
+.description {
+  display: -webkit-box; overflow: hidden; margin: 10px 0 0; color: var(--muted);
+  font-size: 13px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+.address-list { border-top: 1px solid var(--line-soft); background: #fbfdfc; }
+.resource-link, .address-static {
+  display: grid; min-height: 48px; grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px; align-items: center; padding: 9px 16px; text-decoration: none;
+}
+.resource-link > span:first-child { display: flex; min-width: 0; align-items: baseline; gap: 5px; }
+.resource-link { color: var(--brand); }
+.resource-link:hover { background: var(--brand-faint); }
+.resource-link:focus-visible { outline: 3px solid #2e705c; outline-offset: -3px; }
+.address-host { min-width: 0; overflow: hidden; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.address-meta { color: var(--quiet); font-size: 11px; text-transform: uppercase; white-space: nowrap; }
+.open-action { color: var(--brand); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.address-static .address-host { color: var(--muted); }
+details.addresses { border-top: 1px solid var(--line-soft); }
+details.addresses summary {
+  display: flex; min-height: 44px; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 16px; color: var(--muted); cursor: pointer; font-size: 12px; list-style: none;
+}
+details.addresses summary::-webkit-details-marker { display: none; }
+details.addresses summary::after { content: "展开"; color: var(--brand); font-weight: 600; }
+details.addresses[open] summary::after { content: "收起"; }
+details.addresses .resource-link, details.addresses .address-static { border-top: 1px solid var(--line-soft); padding-left: 22px; }
+
+.empty-state {
+  padding: 56px 24px; border: 1px dashed #c6d7d0; border-radius: var(--radius-surface);
+  background: rgba(255,255,255,.62); color: var(--muted); text-align: center;
+}
+.empty-state strong { display: block; margin-bottom: 5px; color: var(--ink); font-size: 16px; }
+.secondary-button, .copy-button {
+  min-height: 44px; padding: 0 15px; border: 1px solid #c7d8d0; border-radius: var(--radius-control);
+  background: white; color: var(--brand); cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.secondary-button:hover, .copy-button:hover { border-color: var(--brand); background: var(--brand-faint); }
+.empty-state .secondary-button { margin-top: 16px; }
+.list-actions { display: flex; justify-content: center; margin-top: 22px; }
+
+.help-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 36px; }
+.notice, .client-access {
+  border: 1px solid var(--line); border-radius: var(--radius-surface); background: rgba(255,255,255,.72);
+}
+.notice { padding: 17px 18px; }
+.notice strong { display: block; margin-bottom: 3px; font-size: 14px; }
+.notice p { margin: 0; color: var(--muted); font-size: 13px; }
+.client-access summary {
+  display: grid; min-height: 54px; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  column-gap: 20px; row-gap: 2px; padding: 10px 18px; cursor: pointer; list-style: none;
+}
+.client-access summary::-webkit-details-marker { display: none; }
+.client-access summary strong { grid-column: 1; grid-row: 1; font-size: 14px; }
+.client-access summary > span { grid-column: 1; grid-row: 2; color: var(--quiet); font-size: 12px; }
+.client-access summary::after {
+  content: "展开 ↓"; grid-column: 2; grid-row: 1 / span 2;
+  color: var(--brand); font-size: 12px; font-weight: 650; white-space: nowrap;
+}
+.client-access[open] summary::after { content: "收起 ↑"; }
+.client-guide { padding: 0 18px 18px; border-top: 1px solid var(--line-soft); }
+.client-guide p { margin: 14px 0 0; color: var(--muted); font-size: 13px; }
+.client-guide code {
+  display: block; overflow-x: auto; margin-top: 12px; padding: 12px 13px;
+  border-radius: var(--radius-control); background: #112d24; color: #dcece5;
+  font: 12px/1.55 "SF Mono", Menlo, Consolas, monospace; white-space: nowrap;
+}
+.copy-button { margin-top: 12px; }
+.copy-button.copied { border-color: var(--brand); background: var(--brand); color: white; }
+footer { margin-top: 36px; color: var(--quiet); font-size: 12px; text-align: center; }
+
+@media (max-width: 920px) {
+  .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .discovery-tools { grid-template-columns: 1fr; align-items: stretch; }
+  .filters { overflow-x: auto; padding-bottom: 2px; }
+}
+@media (max-width: 640px) {
+  .wrap { width: min(100% - 28px, 1120px); }
+  .site-header .wrap { min-height: 58px; }
+  .connection-state span:last-child { font-size: 0; }
+  .connection-state span:last-child::after { content: "已连接"; font-size: 12px; }
+  .portal-intro { grid-template-columns: 1fr; gap: 20px; padding: 28px 0 24px; }
+  .resource-total { display: flex; min-width: 0; align-items: baseline; gap: 8px; padding: 0; border: 0; }
+  .resource-total strong { font-size: 26px; }
+  .resource-total span { margin: 0; }
+  .discovery-tools { position: static; padding: 12px; }
+  .filter-button { min-height: 44px; }
+  .resource-section { margin-top: 28px; }
+  .section-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .resource-grid { grid-template-columns: 1fr; }
+  .card-body { min-height: 0; }
   .shortcut { display: none; }
-  .section-head { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .client-access summary { column-gap: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
 </style>
 </head>
 <body>
-<header class="hero">
+<a class="skip-link" href="#resourceSearch">跳到资源搜索</a>
+<header class="site-header">
   <div class="wrap">
-    <nav>
-      <div class="brand"><span class="mark">N</span><span>NWAFU Connect</span></div>
-      <div class="connected">aTrust 安全连接已建立</div>
-    </nav>
-    <div class="intro">
-      <div>
-        <div class="eyebrow">Campus Resource Gateway</div>
-        <h1>校内资源，一站直达</h1>
-        <p class="lead">浏览本次登录由学校 aTrust 网关授权的资源。点击资源，NWAFU Connect 会自动通过对应安全隧道访问。</p>
-      </div>
-      <div class="total"><strong>{{len .Resources}}</strong><span>项应用资源</span></div>
-    </div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">N</span><span>NWAFU Connect</span></div>
+    <div class="connection-state"><span class="status-dot" aria-hidden="true"></span><span>aTrust 安全连接已建立</span></div>
   </div>
 </header>
-<main class="content wrap">
-  <label class="search-panel" for="resourceSearch">
-    <span class="search-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
-    <span class="sr-only">搜索资源名称、说明或地址</span>
-    <input id="resourceSearch" type="search" placeholder="搜索资源名称、说明或地址…" autocomplete="off">
-    <span class="shortcut">⌘ K</span>
-  </label>
-  <div class="protocol-toggle-wrap">
-    <button class="protocol-toggle" id="sshToggle" type="button" aria-expanded="false" aria-controls="sshGuide">
-      <svg class="chev" width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="M3.5 2 8 6 3.5 10"/></svg>
-      SSH / SFTP 等 TCP 客户端接入
-    </button>
-  </div>
-  <section class="protocol-guide" id="sshGuide" role="region" aria-labelledby="sshToggle">
-    <strong>SSH / SFTP 等 TCP 客户端</strong>
-    <p>使用随应用打包的 stdio 代理助手，将任意 TCP 客户端接入当前 aTrust 会话：</p>
-    <code id="sshCommand">{{.SSHCommand}}</code>
-    <button class="copy-button" type="button" data-copy="sshCommand">复制命令</button>
+<main class="wrap">
+  <section class="portal-intro" aria-labelledby="pageTitle">
+    <div>
+      <p class="session-label">本次会话已授权</p>
+      <h1 id="pageTitle">校内资源</h1>
+      <p class="intro-copy">这里仅显示学校 aTrust 网关下发的访问权限。打开资源后，请保持 NWAFU Connect 和此受管浏览器运行。</p>
+    </div>
+    <div class="resource-total" aria-label="共 {{.Total}} 项资源"><strong>{{.Total}}</strong><span>项可用资源</span></div>
   </section>
-  <div class="section-head">
-    <div><h2>全部资源</h2><p>资源权限由学校 aTrust 网关实时下发</p></div>
-    <span id="resultCount">{{len .Resources}} 个结果</span>
-  </div>
-  <section id="resourceGrid" class="grid" aria-live="polite">
-    {{range $i, $r := .Resources}}<article class="card{{if $r.Primary.URL}} has-url{{end}}{{if $r.Additional}} has-additional{{end}}" data-search="{{$r.SearchText}}" style="animation-delay: {{$i}}ms;"{{if $r.Primary.URL}} data-url="{{$r.Primary.URL}}" tabindex="0" role="link"{{end}}><div class="card-main"><div class="card-row"><span class="resource-icon" aria-hidden="true">{{$r.Monogram}}</span><div class="card-copy"><span class="resource-name">{{$r.Name}}</span>{{if $r.Kind}}<span class="type-badge kind-{{$r.Kind}}"><span class="dot"></span>{{$r.KindLabel}}</span>{{end}}{{if $r.Description}}<span class="description">{{$r.Description}}</span>{{end}}</div></div></div>{{if $r.Primary.URL}}<div class="address" data-url="{{$r.Primary.URL}}" role="link" tabindex="0"><span class="host">{{$r.Primary.Host}}</span><span class="meta">{{$r.Primary.Protocol}} · {{$r.Primary.Ports}}</span></div>{{else}}{{if $r.Additional}}<div class="address-static address-hint"><span class="host">{{$r.Primary.Host}}</span><span class="meta">点击展开 ↓</span></div>{{else}}<div class="address-static"><span class="host">{{$r.Primary.Host}}</span><span class="meta">{{$r.Primary.Protocol}} · {{$r.Primary.Ports}}</span></div>{{end}}{{end}}{{if $r.Additional}}<details><summary>另外 {{len $r.Additional}} 个下发地址</summary>{{range $r.Additional}}{{if .URL}}<div class="address" data-url="{{.URL}}" role="link" tabindex="0"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{else}}<div class="address-static"><span class="host">{{.Host}}</span><span class="meta">{{.Protocol}} · {{.Ports}}</span></div>{{end}}{{end}}</details>{{end}}{{if $r.Primary.URL}}<svg class="open-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 11 11 5"/><path d="M6 5h5v5"/></svg>{{end}}</article>{{end}}
+
+  <section class="discovery-tools" aria-label="资源查找工具">
+    <div class="search-group">
+      <label for="resourceSearch">查找资源</label>
+      <div class="search-control">
+        <span class="search-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></span>
+        <input id="resourceSearch" type="search" placeholder="输入名称、说明或地址" autocomplete="off" spellcheck="false">
+        <span class="shortcut" id="searchShortcut">⌘ K</span>
+      </div>
+    </div>
+    <div>
+      <span class="filter-label">资源类型</span>
+      <div class="filters" role="group" aria-label="按资源类型筛选">
+        <button class="filter-button" type="button" data-kind="all" aria-pressed="true">全部</button>
+        <button class="filter-button" type="button" data-kind="web" aria-pressed="false">网页</button>
+        <button class="filter-button" type="button" data-kind="ssh" aria-pressed="false">SSH</button>
+        <button class="filter-button" type="button" data-kind="client" aria-pressed="false">客户端</button>
+      </div>
+    </div>
   </section>
-  <div id="emptyState" class="empty">
-    <svg class="empty-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-    <strong>没有找到匹配的资源</strong>
-    请尝试其他关键词，或清除搜索查看全部下发资源。
+
+  <section class="resource-section" aria-labelledby="resourceHeading">
+    <div class="section-heading">
+      <div><h2 id="resourceHeading">资源列表</h2><p>选择明确的地址打开；非网页资源会保留连接信息供客户端使用。</p></div>
+      <span id="resultCount" aria-live="polite" aria-atomic="true">{{if .HasMore}}已显示 {{len .Resources}} / {{.Total}} 项{{else}}{{len .Resources}} 项{{end}}</span>
+    </div>
+    <div id="resourceGrid" class="resource-grid">
+      {{range $resource := .Resources}}{{template "resource-card" $resource}}{{end}}
+    </div>
+    <div id="emptyState" class="empty-state"{{if .Resources}} hidden{{end}}>
+      <strong>没有匹配的资源</strong>
+      <span>换一个关键词，或清除类型筛选后再试。</span>
+      <div><button class="secondary-button" id="clearFilters" type="button">清除筛选</button></div>
+    </div>
+    {{if .HasMore}}<div class="list-actions"><button class="secondary-button" id="showMore" type="button">显示更多资源</button></div>{{end}}
+  </section>
+
+  <div class="help-grid">
+    <aside class="notice">
+      <strong>列表中没有需要的网站？</strong>
+      <p>客户端不能绕过学校网关权限。请联系学校网络管理员，将目标加入你的 aTrust 资源策略。</p>
+    </aside>
+    <details class="client-access">
+      <summary><strong>SSH / SFTP 等客户端如何接入</strong><span>高级用法，普通网页访问无需设置</span></summary>
+      <div class="client-guide">
+        <p>使用随应用提供的 stdio 代理助手，把 TCP 客户端接入当前会话；请复制到 {{.SSHCommandShell}} 运行：</p>
+        <code id="sshCommand">{{.SSHCommand}}</code>
+        <button class="copy-button" type="button" data-copy="sshCommand">复制命令</button>
+      </div>
+    </details>
   </div>
-  <div class="actions"><button id="showMore" type="button">显示全部资源</button></div>
-  <aside class="notice">
-    <span class="notice-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span>
-    <div><strong>找不到需要的校内网站？</strong><p>NWAFU Connect 只能使用学校 aTrust 网关下发并授权的资源。若校内网站未出现在列表中，需要由学校网络管理员将它加入 aTrust 资源策略，客户端无法绕过网关权限。</p></div>
-  </aside>
-  <footer>NWAFU Connect · 临时受管浏览器会话</footer>
+  <footer>临时受管浏览器会话 · 关闭连接后资源将不可访问</footer>
 </main>
 <script>
 (() => {
+  const initialLimit = {{.InitialLimit}};
+  const totalResources = {{.Total}};
   const input = document.getElementById("resourceSearch");
-  const cards = Array.from(document.querySelectorAll(".card"));
+  const grid = document.getElementById("resourceGrid");
+  let cards = Array.from(document.querySelectorAll(".resource-card"));
   const count = document.getElementById("resultCount");
   const empty = document.getElementById("emptyState");
-  function render() {
-    const query = input.value.trim().toLowerCase();
-    const matches = query ? cards.filter(card => card.dataset.search.toLowerCase().includes(query)) : cards;
-    const total = matches.length;
-    const visible = query || expanded ? matches : matches.slice(0, initialLimit);
-    const visibleSet = new Set(visible);
-    for (const card of cards) {
-      const shouldShow = visibleSet.has(card);
-      if (card.hidden !== !shouldShow) card.hidden = !shouldShow;
+  const clear = document.getElementById("clearFilters");
+  const more = document.getElementById("showMore");
+  const filterButtons = Array.from(document.querySelectorAll(".filter-button"));
+  const shortcut = document.getElementById("searchShortcut");
+  let activeKind = "all";
+  let expanded = false;
+  let renderPending = false;
+  let deferredLoaded = !more;
+  let hydrationPromise = null;
+
+  if (!/Mac|iPhone|iPad/.test(navigator.platform)) shortcut.textContent = "Ctrl K";
+
+  async function hydrateDeferred() {
+    if (deferredLoaded) return true;
+    if (hydrationPromise) return hydrationPromise;
+    more.hidden = false;
+    more.disabled = true;
+    more.textContent = "正在加载资源…";
+    hydrationPromise = (async () => {
+      const response = await fetch("/resources", {headers: {"Accept": "text/html"}});
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const markup = await response.text();
+      const fragment = document.createElement("template");
+      fragment.innerHTML = markup;
+      grid.appendChild(fragment.content);
+      cards = Array.from(document.querySelectorAll(".resource-card"));
+      deferredLoaded = true;
+      return true;
+    })();
+    try {
+      return await hydrationPromise;
+    } catch (_) {
+      count.textContent = "资源加载失败";
+      more.disabled = false;
+      more.textContent = "加载失败，点击重试";
+      return false;
+    } finally {
+      hydrationPromise = null;
     }
-    count.textContent = total + " 个结果";
-    empty.style.display = total ? "none" : "block";
-    more.style.display = !query && cards.length > initialLimit ? "inline-block" : "none";
-    more.textContent = expanded ? "收起资源" : "显示全部资源";
   }
-  input.addEventListener("input", render);
-  more.addEventListener("click", () => { expanded = !expanded; render(); });
+
+  function render() {
+    renderPending = false;
+    const query = input.value.trim().toLocaleLowerCase();
+    let matches = 0;
+    let visible = 0;
+    for (const card of cards) {
+      const kind = card.dataset.kind;
+      const kindMatches = activeKind === "all" ||
+        kind === activeKind ||
+        (activeKind === "web" && (kind === "mix" || kind === "all")) ||
+        (activeKind === "ssh" && (kind === "mix" || kind === "all")) ||
+        (activeKind === "client" && kind !== "web");
+      const queryMatches = !query || card.dataset.search.includes(query);
+      const matchesCard = kindMatches && queryMatches;
+      if (matchesCard) matches++;
+      const shouldShow = matchesCard && (expanded || Boolean(query) || matches <= initialLimit);
+      card.hidden = !shouldShow;
+      if (shouldShow) visible++;
+    }
+    if (!deferredLoaded && !query && activeKind === "all") {
+      count.textContent = "已显示 " + visible + " / " + totalResources + " 项";
+    } else {
+      count.textContent = visible === matches ? matches + " 项" : "已显示 " + visible + " / " + matches + " 项";
+    }
+    empty.hidden = matches !== 0;
+    if (more) {
+      more.disabled = false;
+      more.hidden = deferredLoaded && (Boolean(query) || matches <= initialLimit);
+      more.textContent = expanded ? "收起资源" : "显示更多资源";
+    }
+  }
+
+  function scheduleRender() {
+    if (renderPending) return;
+    renderPending = true;
+    requestAnimationFrame(render);
+  }
+
+  input.addEventListener("input", async () => {
+    if (input.value.trim() && !(await hydrateDeferred())) return;
+    scheduleRender();
+  });
+  filterButtons.forEach(button => {
+    button.addEventListener("click", async () => {
+      activeKind = button.dataset.kind;
+      expanded = false;
+      filterButtons.forEach(item => item.setAttribute("aria-pressed", item === button ? "true" : "false"));
+      if (!(await hydrateDeferred())) return;
+      scheduleRender();
+    });
+  });
+  if (more) {
+    more.addEventListener("click", async () => {
+      if (!(await hydrateDeferred())) return;
+      expanded = !expanded;
+      scheduleRender();
+    });
+  }
+  clear.addEventListener("click", () => {
+    input.value = "";
+    activeKind = "all";
+    expanded = false;
+    filterButtons.forEach(button => button.setAttribute("aria-pressed", button.dataset.kind === "all" ? "true" : "false"));
+    input.focus();
+    scheduleRender();
+  });
   document.addEventListener("keydown", event => {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") {
       event.preventDefault();
       input.focus();
+      input.select();
+    } else if (event.key === "Escape" && document.activeElement === input && input.value) {
+      input.value = "";
+      scheduleRender();
     }
   });
+
   document.querySelectorAll("[data-copy]").forEach(button => {
     const original = button.textContent;
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const text = document.getElementById(button.dataset.copy).textContent;
-      try { await navigator.clipboard.writeText(text); }
-      catch (_) {
+    button.addEventListener("click", async () => {
+      const source = document.getElementById(button.dataset.copy);
+      const text = source ? source.textContent : "";
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (_) {
         const area = document.createElement("textarea");
         area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
         document.body.appendChild(area);
         area.select();
         document.execCommand("copy");
@@ -321,55 +489,7 @@ footer { margin-top: 44px; padding-bottom: 8px; color: var(--faint); font-size: 
       setTimeout(() => {
         button.classList.remove("copied");
         button.textContent = original;
-      }, 1500);
-    });
-  });
-  const sshToggle = document.getElementById("sshToggle");
-  const sshGuide = document.getElementById("sshGuide");
-  if (sshToggle && sshGuide) {
-    sshToggle.addEventListener("click", () => {
-      const open = sshGuide.classList.toggle("open");
-      sshToggle.setAttribute("aria-expanded", open ? "true" : "false");
-    });
-  }
-  function openResource(url) {
-    if (!url) return;
-    const toast = document.createElement("div");
-    toast.textContent = "正在通过安全隧道打开…";
-    toast.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:10px;background:#0f4233;color:#fff;font-size:13px;letter-spacing:.02em;box-shadow:0 8px 24px rgba(15,66,51,.28);z-index:9999;opacity:0;transition:opacity .18s ease;";
-    document.body.appendChild(toast);
-    requestAnimationFrame(() => { toast.style.opacity = "1"; });
-    const a = document.createElement("a");
-    a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
-    document.body.appendChild(a);
-    a.click(); a.remove();
-    setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => toast.remove(), 220); }, 900);
-  }
-  document.querySelectorAll(".card").forEach(card => {
-    const details = card.querySelector("details");
-    card.addEventListener("click", (event) => {
-      if (event.target.closest("details") || event.target.closest("summary")) return;
-      if (event.target.closest(".address")) return;
-      if (card.dataset.url) { event.preventDefault(); openResource(card.dataset.url); return; }
-      // Range-only primary host: reveal the additional issued addresses so the
-      // user can reach the discrete URLs the gateway actually authorized.
-      if (details) { details.open = !details.open; }
-    });
-    card.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      if (card.dataset.url) { event.preventDefault(); openResource(card.dataset.url); }
-      else if (details) { event.preventDefault(); details.open = !details.open; }
-    });
-  });
-  document.querySelectorAll(".address[data-url]").forEach(row => {
-    row.addEventListener("click", (event) => {
-      event.preventDefault(); event.stopPropagation();
-      openResource(row.dataset.url);
-    });
-    row.addEventListener("keydown", (event) => {
-      if ((event.key === "Enter" || event.key === " ") && row.dataset.url) {
-        event.preventDefault(); openResource(row.dataset.url);
-      }
+      }, 1600);
     });
   });
   render();
@@ -378,70 +498,175 @@ footer { margin-top: 44px; padding-bottom: 8px; color: var(--faint); font-size: 
 </body>
 </html>`))
 
-func StartBrowserHome(sourceResources []client.Resource, proxyAddress string) (string, error) {
+var browserHomeCardTemplate = template.Must(browserHomeTemplate.New("resource-card").Parse(`<article class="resource-card" data-search="{{.SearchText}}" data-kind="{{.Kind}}">
+  <div class="card-body">
+    <div class="card-heading">
+      <span class="resource-mark" aria-hidden="true">{{.Monogram}}</span>
+      <div class="title-group">
+        <h3 class="resource-name">{{.Name}}</h3>
+        {{if .Kind}}<span class="type-badge kind-{{.Kind}}">{{.KindLabel}}</span>{{end}}
+      </div>
+    </div>
+    {{if .Description}}<p class="description">{{.Description}}</p>{{end}}
+  </div>
+  <div class="address-list">
+    {{if .Primary.URL}}<a class="resource-link" href="{{.Primary.URL}}" target="_blank" rel="noopener noreferrer" aria-label="打开 {{.Name}}：{{.Primary.Host}}"><span><span class="address-host">{{.Primary.Host}}</span><span class="address-meta">{{.Primary.Protocol}} · {{.Primary.Ports}}</span></span><span class="open-action">打开 <span aria-hidden="true">↗</span></span></a>{{else}}<div class="address-static"><span class="address-host">{{.Primary.Host}}</span><span class="address-meta">{{.Primary.Protocol}} · {{.Primary.Ports}}</span></div>{{end}}
+    {{if .Additional}}<details class="addresses"><summary><span>其他可用地址</span><span>{{.Additional | len}} 项</span></summary>{{$resource := .}}{{range $address := .Additional}}{{if $address.URL}}<a class="resource-link" href="{{$address.URL}}" target="_blank" rel="noopener noreferrer" aria-label="打开 {{$resource.Name}}：{{$address.Host}}"><span><span class="address-host">{{$address.Host}}</span><span class="address-meta">{{$address.Protocol}} · {{$address.Ports}}</span></span><span class="open-action">打开 <span aria-hidden="true">↗</span></span></a>{{else}}<div class="address-static"><span class="address-host">{{$address.Host}}</span><span class="address-meta">{{$address.Protocol}} · {{$address.Ports}}</span></div>{{end}}{{end}}</details>{{end}}
+  </div>
+</article>`))
+
+const browserHomeInitialLimit = 18
+
+func buildBrowserHomeResources(sourceResources []client.Resource) []browserHomeResource {
 	resources := make([]browserHomeResource, 0, len(sourceResources))
 	for _, source := range sourceResources {
 		addresses := make([]browserHomeAddress, 0, len(source.Addresses))
 		searchParts := []string{source.Name, source.Description}
+		seenAddresses := make(map[string]struct{}, len(source.Addresses))
 		for _, address := range source.Addresses {
 			host := strings.TrimSpace(address.Host)
 			if host == "" {
 				continue
 			}
+			protocol := strings.ToLower(strings.TrimSpace(address.Protocol))
+			key := fmt.Sprintf("%s\x00%s\x00%d\x00%d", strings.ToLower(host), protocol, address.PortMin, address.PortMax)
+			if _, found := seenAddresses[key]; found {
+				continue
+			}
+			seenAddresses[key] = struct{}{}
+			ports := portRange(address.PortMin, address.PortMax)
 			addresses = append(addresses, browserHomeAddress{
 				Host:     host,
 				URL:      browserAddressURL(host, address),
-				Protocol: address.Protocol,
-				Ports:    portRange(address.PortMin, address.PortMax),
+				Protocol: strings.ToUpper(protocol),
+				Ports:    ports,
 			})
-			searchParts = append(searchParts, host)
+			searchParts = append(searchParts, host, protocol, ports)
 		}
 		if len(addresses) == 0 {
 			continue
 		}
+
+		primaryIndex := 0
+		for index, address := range addresses {
+			if address.URL != "" {
+				primaryIndex = index
+				break
+			}
+		}
+		primary := addresses[primaryIndex]
+		additional := make([]browserHomeAddress, 0, len(addresses)-1)
+		additional = append(additional, addresses[:primaryIndex]...)
+		additional = append(additional, addresses[primaryIndex+1:]...)
+
 		name := strings.TrimSpace(source.Name)
 		if name == "" {
-			name = addresses[0].Host
+			name = primary.Host
 		}
 		kind, kindLabel := inferResourceType(source)
+		searchParts = append(searchParts, kind, kindLabel)
 		resources = append(resources, browserHomeResource{
 			Name:        name,
 			Description: strings.TrimSpace(source.Description),
-			SearchText:  strings.Join(searchParts, " "),
+			SearchText:  strings.ToLower(strings.Join(searchParts, " ")),
 			Monogram:    resourceMonogram(name),
 			Kind:        kind,
 			KindLabel:   kindLabel,
-			Primary:     addresses[0],
-			Additional:  addresses[1:],
+			Primary:     primary,
+			Additional:  additional,
 		})
 	}
-	sort.Slice(resources, func(i, j int) bool {
-		return resources[i].Name < resources[j].Name
+	sort.SliceStable(resources, func(i, j int) bool {
+		left, right := strings.ToLower(resources[i].Name), strings.ToLower(resources[j].Name)
+		if left == right {
+			return resources[i].Name < resources[j].Name
+		}
+		return left < right
 	})
+	return resources
+}
+
+func splitBrowserHomeResources(resources []browserHomeResource) (initial, deferred []browserHomeResource) {
+	limit := min(len(resources), browserHomeInitialLimit)
+	return resources[:limit], resources[limit:]
+}
+
+func isLoopbackAuthority(authority string) bool {
+	host, _, err := net.SplitHostPort(authority)
+	if err != nil {
+		host = authority
+	}
+	host = strings.TrimSuffix(strings.Trim(strings.TrimSpace(host), "[]"), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func newBrowserHomeHandler(data browserHomeData, deferred []browserHomeResource) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Cache-Control", "no-store, max-age=0")
+		writer.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+		writer.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		writer.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		writer.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), usb=()")
+		writer.Header().Set("Referrer-Policy", "no-referrer")
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
+		writer.Header().Set("X-Frame-Options", "DENY")
+		if !isLoopbackAuthority(request.Host) {
+			http.Error(writer, "forbidden", http.StatusForbidden)
+			return
+		}
+		if request.Method != http.MethodGet {
+			writer.Header().Set("Allow", http.MethodGet)
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch request.URL.Path {
+		case "/":
+			if err := browserHomeTemplate.Execute(writer, data); err != nil {
+				log.Printf("Render managed browser home page failed: %v", err)
+			}
+		case "/resources":
+			for _, resource := range deferred {
+				if err := browserHomeCardTemplate.Execute(writer, resource); err != nil {
+					log.Printf("Render deferred managed browser resource failed: %v", err)
+					return
+				}
+			}
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	return mux
+}
+
+func StartBrowserHome(sourceResources []client.Resource, proxyAddress string) (string, error) {
+	resources := buildBrowserHomeResources(sourceResources)
+	initial, deferred := splitBrowserHomeResources(resources)
+	data := browserHomeData{
+		Resources:       initial,
+		SSHCommand:      sshProxyCommand(proxyAddress),
+		SSHCommandShell: sshProxyCommandShell(),
+		HasMore:         len(deferred) != 0,
+		InitialLimit:    browserHomeInitialLimit,
+		Total:           len(resources),
+	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("start managed browser home page: %w", err)
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if err := browserHomeTemplate.Execute(w, browserHomeData{Resources: resources, SSHCommand: sshProxyCommand(proxyAddress)}); err != nil {
-			log.Printf("Render managed browser home page failed: %v", err)
-		}
-	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	handler := newBrowserHomeHandler(data, deferred)
+	server := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
 	hook_func.RegisterTerminalFunc("CloseBrowserHome", func(ctx context.Context) error {
 		shutdownContext, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
@@ -459,10 +684,15 @@ func StartBrowserHome(sourceResources []client.Resource, proxyAddress string) (s
 }
 
 func browserAddressURL(host string, resource client.ResourceAddress) string {
-	if strings.HasPrefix(host, "*.") || strings.Contains(host, "/") || isIPRange(host) {
+	host = strings.TrimSpace(host)
+	if host == "" || strings.HasPrefix(host, "*.") || strings.ContainsAny(host, "/ \t\r\n") || isIPRange(host) {
 		return ""
 	}
-	if resource.Protocol != "tcp" && resource.Protocol != "all" {
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return ""
+	}
+	protocol := strings.ToLower(strings.TrimSpace(resource.Protocol))
+	if protocol != "tcp" && protocol != "all" {
 		return ""
 	}
 	switch {
@@ -492,14 +722,29 @@ func sshProxyCommand(proxyAddress string) string {
 			helper = candidate
 		}
 	}
-	if runtime.GOOS == "windows" {
-		if strings.ContainsAny(helper, " \t") {
-			helper = `\"` + helper + `\"`
-		}
-		return fmt.Sprintf(`ssh -o "ProxyCommand=%s --proxy %s --target %%h:%%p" USER@HOST`, helper, proxyAddress)
+	return sshProxyCommandLine(runtime.GOOS, helper, proxyAddress)
+}
+
+func sshProxyCommandLine(goos, helper, proxyAddress string) string {
+	if goos == "windows" {
+		proxyCommand := fmt.Sprintf(`ProxyCommand="%s" --proxy %s --target %%h:%%p`, helper, proxyAddress)
+		proxyCommand = strings.ReplaceAll(proxyCommand, `'`, `''`)
+		return fmt.Sprintf(`$proxyCommand = '%s'; ssh -o $proxyCommand USER@HOST`, proxyCommand)
 	}
-	helper = strings.ReplaceAll(helper, `"`, `\"`)
-	return fmt.Sprintf(`ssh -o 'ProxyCommand="%s" --proxy %s --target %%h:%%p' USER@HOST`, helper, proxyAddress)
+	helper = strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(helper)
+	proxyCommand := fmt.Sprintf(`ProxyCommand="%s" --proxy %s --target %%h:%%p`, helper, proxyAddress)
+	return fmt.Sprintf("ssh -o %s USER@HOST", shellSingleQuote(proxyCommand))
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func sshProxyCommandShell() string {
+	if runtime.GOOS == "windows" {
+		return "Windows PowerShell"
+	}
+	return "终端"
 }
 
 func portRange(minimum, maximum int) string {
@@ -537,8 +782,11 @@ func resourceMonogram(name string) string {
 	parts := strings.FieldsFunc(name, func(r rune) bool {
 		return r == ' ' || r == '.' || r == '-' || r == '_' || r == '/' || r == '@' || r == ':'
 	})
-	if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
-		return strings.ToUpper(string(parts[0][0]) + string(parts[1][0]))
+	if len(parts) >= 2 {
+		first, second := []rune(parts[0]), []rune(parts[1])
+		if len(first) != 0 && len(second) != 0 {
+			return strings.ToUpper(string(first[0]) + string(second[0]))
+		}
 	}
 	runes := []rune(name)
 	if len(runes) >= 2 {
@@ -547,12 +795,21 @@ func resourceMonogram(name string) string {
 	return strings.ToUpper(string(runes))
 }
 
-// inferResourceType classifies a resource by the ports its addresses expose so
-// the portal can show a small "Web / SSH / TCP / 全部 / 混合" badge on each card.
+// inferResourceType classifies a resource by the transports and ports exposed
+// so the portal can distinguish browser links from client-only resources.
 func inferResourceType(source client.Resource) (kind, label string) {
-	hasWeb, hasSSH, hasWide := false, false, false
+	hasWeb, hasSSH, hasWide, hasTCP, hasUDP := false, false, false, false, false
 	for _, address := range source.Addresses {
-		if address.Protocol != "tcp" && address.Protocol != "all" {
+		protocol := strings.ToLower(strings.TrimSpace(address.Protocol))
+		switch protocol {
+		case "tcp":
+			hasTCP = true
+		case "udp":
+			hasUDP = true
+			continue
+		case "all":
+			hasTCP, hasUDP = true, true
+		default:
 			continue
 		}
 		if address.PortMin <= 22 && address.PortMax >= 22 {
@@ -561,19 +818,23 @@ func inferResourceType(source client.Resource) (kind, label string) {
 		if (address.PortMin <= 80 && address.PortMax >= 80) || (address.PortMin <= 443 && address.PortMax >= 443) {
 			hasWeb = true
 		}
-		if address.Protocol == "all" || (address.PortMin <= 1 && address.PortMax >= 65535) {
+		if address.PortMin <= 1 && address.PortMax >= 65535 {
 			hasWide = true
 		}
 	}
 	switch {
-	case (hasSSH && hasWeb) || (hasWide && (hasSSH || hasWeb)):
+	case hasWide:
+		return "all", "全端口"
+	case hasSSH && hasWeb:
 		return "mix", "混合"
-	case hasSSH:
-		return "ssh", "SSH"
 	case hasWeb:
 		return "web", "Web"
-	case hasWide:
-		return "all", "全部"
+	case hasSSH:
+		return "ssh", "SSH"
+	case hasTCP && hasUDP:
+		return "mix", "TCP / UDP"
+	case hasUDP:
+		return "udp", "UDP"
 	default:
 		return "tcp", "TCP"
 	}

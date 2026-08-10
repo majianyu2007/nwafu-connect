@@ -76,15 +76,15 @@ func New(application fyne.App, store desktopconfig.Store, icon fyne.Resource, on
 		widget.NewFormItem("浏览器起始页", instance.browserURL),
 	)
 	policy := widget.NewCard("受管浏览器策略", "由桌面客户端强制执行", container.NewVBox(
-		widget.NewLabel("✓ 所有浏览器 HTTP/HTTPS 流量经私有 NWAFU Connect 代理"),
-		widget.NewLabel("✓ DNS 服务器地址由学校网关自动提供（DHCP / auto）"),
+		widget.NewLabel("✓ 浏览器 HTTP/HTTPS 请求只允许访问网关授权资源"),
+		widget.NewLabel("✓ 校内域名优先使用网关 DNS，缺失时使用固定端点加密 DoH"),
 	))
 	tabs := container.NewAppTabs(
 		container.NewTabItem("学校网关", container.NewVScroll(gatewayForm)),
 		container.NewTabItem("浏览器与后台", container.NewVScroll(container.NewVBox(browserForm, policy, instance.launchAtLogin))),
 		container.NewTabItem("高级设置", container.NewBorder(
 			widget.NewLabel("直接编辑 config.toml（TOML 格式）。保存即重新连接，密码等敏感字段也在此文件中。"),
-			widget.NewButtonWithIcon("恢复默认并重新加载", theme.ViewRefreshIcon(), instance.reloadAdvanced),
+			widget.NewButtonWithIcon("放弃修改并重新加载", theme.ViewRefreshIcon(), instance.reloadAdvanced),
 			nil, nil, container.NewVScroll(instance.advancedConfig),
 		)),
 	)
@@ -128,6 +128,13 @@ func (w *Window) save() {
 		dialog.ShowError(err, w.window)
 		return
 	}
+	if raw := strings.TrimSpace(w.advancedConfig.Text); raw != "" {
+		configuration, err = w.store.MergeRaw(configuration, []byte(raw))
+		if err != nil {
+			dialog.ShowError(err, w.window)
+			return
+		}
+	}
 	editable := desktopconfig.Editable{
 		Server: w.server.Text, Port: port, Username: w.username.Text, Password: w.password.Text, TOTPSecret: w.totpSecret.Text,
 		AuthType: authTypeValue(w.authType.Selected), Phone: w.phone.Text, LoginDomain: w.loginDomain.Text,
@@ -136,12 +143,6 @@ func (w *Window) save() {
 	if err := desktopconfig.Apply(&configuration, &preferences, editable); err != nil {
 		dialog.ShowError(err, w.window)
 		return
-	}
-	if raw := strings.TrimSpace(w.advancedConfig.Text); raw != "" {
-		if err := w.store.SaveRaw([]byte(raw)); err != nil {
-			dialog.ShowError(err, w.window)
-			return
-		}
 	}
 	if err := w.store.Save(configuration, preferences); err != nil {
 		dialog.ShowError(err, w.window)
@@ -152,6 +153,9 @@ func (w *Window) save() {
 			dialog.ShowError(err, w.window)
 			return
 		}
+	}
+	if raw, err := w.store.LoadRaw(); err == nil {
+		w.advancedConfig.SetText(string(raw))
 	}
 	w.password.SetText("")
 	w.totpSecret.SetText("")
@@ -190,8 +194,7 @@ func (w *Window) reload() error {
 	return nil
 }
 
-// reloadAdvanced refreshes only the raw TOML editor from disk, used by the
-// "恢复默认并重新加载" button on the advanced tab.
+// reloadAdvanced discards unsaved editor changes and reloads config.toml.
 func (w *Window) reloadAdvanced() {
 	if raw, err := w.store.LoadRaw(); err == nil {
 		w.advancedConfig.SetText(string(raw))

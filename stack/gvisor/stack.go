@@ -2,6 +2,7 @@ package gvisor
 
 import (
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/majianyu2007/nwafu-connect/client"
@@ -21,7 +22,7 @@ import (
 type Stack struct {
 	gvisorStack *stack.Stack
 	resolve     zcdns.LocalServer
-	ipPool      *ippool.IPPool[client.DomainResource]
+	ipPool      *ippool.IPPool[client.DomainResourceSet]
 
 	endpoint *Endpoint
 }
@@ -33,6 +34,7 @@ type Endpoint struct {
 	client client.Client
 
 	l3Conn io.ReadWriteCloser
+	failed chan error
 
 	dispatcher stack.NetworkDispatcher
 }
@@ -85,32 +87,37 @@ func (ep *Endpoint) SetOnCloseAction(func()) {}
 
 // WritePackets is called when get packets from gVisor stack. Then it sends them to VPN server
 func (ep *Endpoint) WritePackets(list stack.PacketBufferList) (int, tcpip.Error) {
+	written := 0
 	for _, packetBuffer := range list.AsSlice() {
-		var buf []byte
-		for _, t := range packetBuffer.AsSlices() {
-			buf = append(buf, t...)
+		var packet []byte
+		for _, slice := range packetBuffer.AsSlices() {
+			packet = append(packet, slice...)
+		}
+		if ep.l3Conn == nil {
+			return written, &tcpip.ErrAborted{}
 		}
 
-		if ep.l3Conn != nil {
-			n, err := ep.l3Conn.Write(buf)
-			if err != nil {
-				if errors.Is(err, client.ErrResourceNotFound) {
-					log.Printf("%v", err)
-					continue
-				}
-
-				if hook_func.IsTerminal() {
-					return list.Len(), nil
-				} else {
-					panic(err)
-				}
+		n, err := ep.l3Conn.Write(packet)
+		if err == nil && n != len(packet) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			if errors.Is(err, client.ErrResourceNotFound) {
+				log.Printf("%v", err)
+				return written, &tcpip.ErrHostUnreachable{}
 			}
-			log.DebugPrintf("Send: wrote %d bytes", n)
-			log.DebugDumpHex(buf[:n])
+			select {
+			case ep.failed <- err:
+			default:
+			}
+			return written, &tcpip.ErrAborted{}
 		}
+		written++
+		log.DebugPrintf("Send: wrote %d bytes", n)
+		log.DebugDumpHex(packet[:n])
 	}
 
-	return list.Len(), nil
+	return written, nil
 }
 
 func NewStack(client client.Client) (*Stack, error) {
@@ -122,8 +129,20 @@ func NewStack(client client.Client) (*Stack, error) {
 		HandleLocal:        true,
 	})
 
+	l3Conn, err := client.NewL3Conn()
+	if err != nil {
+		return nil, fmt.Errorf("create L3 tunnel connection: %w", err)
+	}
+	stackReady := false
+	defer func() {
+		if !stackReady {
+			_ = l3Conn.Close()
+		}
+	}()
 	s.endpoint = &Endpoint{
 		client: client,
+		l3Conn: l3Conn,
+		failed: make(chan error, 1),
 	}
 
 	tcpipErr := s.gvisorStack.CreateNIC(NICID, s.endpoint)
@@ -156,6 +175,7 @@ func NewStack(client client.Client) (*Stack, error) {
 	s.gvisorStack.SetTransportProtocolOption(tcp.ProtocolNumber, &cOpt)
 	s.gvisorStack.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, NIC: NICID})
 
+	stackReady = true
 	return s, nil
 }
 
@@ -163,34 +183,42 @@ func (s *Stack) SetupResolve(r zcdns.LocalServer) {
 	s.resolve = r
 }
 
-func (s *Stack) SetupIPPool(ipPool *ippool.IPPool[client.DomainResource]) {
+func (s *Stack) SetupIPPool(ipPool *ippool.IPPool[client.DomainResourceSet]) {
 	s.ipPool = ipPool
 }
 
-func (s *Stack) Run() {
-	var connErr error
-	s.endpoint.l3Conn, connErr = s.endpoint.client.NewL3Conn()
-	if connErr != nil {
-		panic(connErr)
-	}
-	// Read from VPN server and send to gVisor stack
-	for {
+func (s *Stack) Run() error {
+	readDone := make(chan error, 1)
+	go func() {
 		buf := make([]byte, MTU)
-		n, err := s.endpoint.l3Conn.Read(buf)
-		if err != nil {
-			if hook_func.IsTerminal() {
+		for {
+			n, err := s.endpoint.l3Conn.Read(buf)
+			if err != nil {
+				if hook_func.IsTerminal() {
+					readDone <- nil
+				} else {
+					readDone <- fmt.Errorf("read from L3 tunnel: %w", err)
+				}
 				return
-			} else {
-				panic(err)
 			}
-		}
-		log.DebugPrintf("Recv: read %d bytes", n)
-		log.DebugDumpHex(buf[:n])
+			if n == 0 {
+				continue
+			}
+			log.DebugPrintf("Recv: read %d bytes", n)
+			log.DebugDumpHex(buf[:n])
 
-		packetBuffer := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload: buffer.MakeWithData(buf),
-		})
-		s.endpoint.dispatcher.DeliverNetworkPacket(header.IPv4ProtocolNumber, packetBuffer)
-		packetBuffer.DecRef()
+			packetBuffer := stack.NewPacketBuffer(stack.PacketBufferOptions{
+				Payload: buffer.MakeWithData(buf[:n]),
+			})
+			s.endpoint.dispatcher.DeliverNetworkPacket(header.IPv4ProtocolNumber, packetBuffer)
+			packetBuffer.DecRef()
+		}
+	}()
+
+	select {
+	case err := <-s.endpoint.failed:
+		return fmt.Errorf("write to L3 tunnel: %w", err)
+	case err := <-readDone:
+		return err
 	}
 }

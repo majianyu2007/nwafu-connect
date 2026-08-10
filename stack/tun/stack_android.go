@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -18,59 +19,61 @@ type Stack struct {
 	l3Conn   io.ReadWriteCloser
 }
 
-func (s *Stack) Run() {
-	var connErr error
-	s.l3Conn, connErr = s.endpoint.client.NewL3Conn()
-	if connErr != nil {
-		return
+func (s *Stack) Run() error {
+	var err error
+	s.l3Conn, err = s.endpoint.client.NewL3Conn()
+	if err != nil {
+		return fmt.Errorf("create L3 tunnel connection: %w", err)
 	}
-	// Read from VPN server and send to TUN stack
+	defer s.l3Conn.Close()
+
+	runErrors := make(chan error, 2)
 	go func() {
 		for {
 			buf := make([]byte, MTU)
 			n, err := s.l3Conn.Read(buf)
 			if err != nil {
-				log.Printf("Error occurred while reading from VPN server: %v", err)
+				runErrors <- fmt.Errorf("read from VPN server: %w", err)
 				return
 			}
 			log.DebugPrintf("Recv: read %d bytes", n)
 			log.DebugDumpHex(buf[:n])
 
-			err = s.endpoint.Write(buf[:n])
-			if err != nil {
-				log.Printf("Error occurred while writing to TUN stack: %v", err)
+			if err := s.endpoint.Write(buf[:n]); err != nil {
+				runErrors <- fmt.Errorf("write to TUN interface: %w", err)
 				return
 			}
 		}
 	}()
 
-	// Read from TUN stack and send to VPN server
-	for {
-		buf := make([]byte, MTU)
-		n, err := s.endpoint.Read(buf)
-		if err != nil {
-			log.Printf("Error occurred while reading from TUN stack: %v", err)
-			return
-		}
+	go func() {
+		for {
+			buf := make([]byte, MTU)
+			n, err := s.endpoint.Read(buf)
+			if err != nil {
+				runErrors <- fmt.Errorf("read from TUN interface: %w", err)
+				return
+			}
 
-		header, err := ipv4.ParseHeader(buf[:n])
-		if err != nil {
-			continue
-		}
+			header, err := ipv4.ParseHeader(buf[:n])
+			if err != nil {
+				continue
+			}
+			if header.Protocol != syscall.IPPROTO_TCP && header.Protocol != syscall.IPPROTO_UDP {
+				continue
+			}
 
-		// Filter out non-TCP/UDP packets otherwise error may occur
-		if header.Protocol != syscall.IPPROTO_TCP && header.Protocol != syscall.IPPROTO_UDP {
-			continue
+			n, err = s.l3Conn.Write(buf[:n])
+			if err != nil {
+				runErrors <- fmt.Errorf("write to VPN server: %w", err)
+				return
+			}
+			log.DebugPrintf("Send: wrote %d bytes", n)
+			log.DebugDumpHex(buf[:n])
 		}
+	}()
 
-		n, err = s.l3Conn.Write(buf[:n])
-		if err != nil {
-			log.Printf("Error occurred while writing to VPN server: %v", err)
-			return
-		}
-		log.DebugPrintf("Send: wrote %d bytes", n)
-		log.DebugDumpHex(buf[:n])
-	}
+	return <-runErrors
 }
 
 type Endpoint struct {

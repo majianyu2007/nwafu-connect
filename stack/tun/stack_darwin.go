@@ -10,10 +10,10 @@ import (
 	"sync"
 	"syscall"
 
-	tun "github.com/mythologyli/sing-tun"
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
 	"github.com/majianyu2007/nwafu-connect/log"
+	tun "github.com/mythologyli/sing-tun"
 	"golang.org/x/sys/unix"
 	"inet.af/netaddr"
 )
@@ -52,15 +52,20 @@ func (ep *Endpoint) Read(buf []byte) (int, error) {
 }
 
 func (s *Stack) AddRoute(target string) error {
-	command := exec.Command("route", "-n", "add", "-net", target, "-interface", s.endpoint.ifceName)
-	err := command.Run()
+	prefix, err := netaddr.ParseIPPrefix(target)
 	if err != nil {
+		return fmt.Errorf("parse route %q: %w", target, err)
+	}
+	command := exec.Command("route", "-n", "add", "-net", prefix.String(), "-interface", s.endpoint.ifceName)
+	if err := command.Run(); err != nil {
 		return err
 	}
+	hook_func.RegisterTerminalFunc("Delete route "+prefix.String(), func(ctx context.Context) error {
+		return exec.Command("route", "-n", "delete", "-net", prefix.String(), "-interface", s.endpoint.ifceName).Run()
+	})
 
-	s.endpoint.ipSetBuilder.AddPrefix(netaddr.MustParseIPPrefix(target))
+	s.endpoint.ipSetBuilder.AddPrefix(prefix)
 	s.endpoint.ipSet, _ = s.endpoint.ipSetBuilder.IPSet()
-
 	return nil
 }
 
@@ -88,7 +93,7 @@ func (s *Stack) AddDnsServer(dnsServer string, targetHost string) error {
 func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client.IPResource) (*Stack, error) {
 	var err error
 	s := &Stack{}
-	s.ipResources = ipResources
+	s.setIPResources(ipResources)
 	s.fakeIP = fakeIP
 	s.endpoint = &Endpoint{
 		client: client,
@@ -117,13 +122,22 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 	if err != nil {
 		return nil, err
 	}
+	var closeOnce sync.Once
+	var closeErr error
+	closeTun := func() error {
+		closeOnce.Do(func() {
+			closeErr = ifce.Close()
+		})
+		return closeErr
+	}
 	hook_func.RegisterTerminalFunc("Close Tun Device", func(ctx context.Context) error {
-		return ifce.Close()
+		return closeTun()
 	})
 	s.endpoint.ifce = ifce
 	s.endpoint.ifceName = tunName
 	netIfce, err := net.InterfaceByName(tunName)
 	if err != nil {
+		_ = closeTun()
 		return nil, err
 	}
 
@@ -139,7 +153,7 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 		},
 		Control: func(network, address string, c syscall.RawConn) error { // By ChenXuzheng
 			return c.Control(func(fd uintptr) {
-				if err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_RECVIF, s.endpoint.ifceIndex); err != nil {
+				if bindErr := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_RECVIF, s.endpoint.ifceIndex); bindErr != nil {
 					log.Println("Warning: failed to bind to interface", s.endpoint.ifceName)
 				}
 			})
@@ -154,7 +168,7 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 		},
 		Control: func(network, address string, c syscall.RawConn) error { // By ChenXuzheng
 			return c.Control(func(fd uintptr) {
-				if err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_RECVIF, s.endpoint.ifceIndex); err != nil {
+				if bindErr := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_RECVIF, s.endpoint.ifceIndex); bindErr != nil {
 					log.Println("Warning: failed to bind to interface", s.endpoint.ifceName)
 				}
 			})
@@ -163,6 +177,7 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 	if dnsHijack {
 		dnsServers, err := hook_func.ListNetworkServices()
 		if err != nil {
+			_ = closeTun()
 			return nil, err
 		}
 		for _, dnsServer := range dnsServers {

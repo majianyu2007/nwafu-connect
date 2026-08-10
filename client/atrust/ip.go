@@ -1,6 +1,7 @@
 package atrust
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
@@ -11,6 +12,47 @@ import (
 
 	"github.com/majianyu2007/nwafu-connect/log"
 )
+
+const tunnelDialTimeout = 10 * time.Second
+
+func writeAll(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		written, err := writer.Write(data)
+		if written < 0 || written > len(data) {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func dialTunnelTLS(address string) (*tls.Conn, error) {
+	return dialTunnelTLSContext(context.Background(), address)
+}
+
+func dialTunnelTLSContext(ctx context.Context, address string) (*tls.Conn, error) {
+	handshakeContext, cancel := context.WithTimeout(ctx, tunnelDialTimeout)
+	defer cancel()
+
+	rawConnection, err := (&net.Dialer{}).DialContext(handshakeContext, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	// aTrust tunnel nodes commonly use gateway-private certificates whose
+	// hostnames do not match their server-issued IP addresses.
+	connection := tls.Client(rawConnection, &tls.Config{InsecureSkipVerify: true})
+	if err := connection.HandshakeContext(handshakeContext); err != nil {
+		_ = rawConnection.Close()
+		return nil, err
+	}
+	return connection, nil
+}
 
 func (c *Client) getIP() error {
 	addr := c.BestNodes[c.MajorNodeGroup]
@@ -24,23 +66,26 @@ func (c *Client) getIP() error {
 		return fmt.Errorf("no reachable node for ip request")
 	}
 
-	conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true})
+	conn, err := dialTunnelTLS(addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("connect to node %s for IP request: %w", addr, err)
 	}
 	defer func(conn *tls.Conn) {
 		_ = conn.Close()
 	}(conn)
+	if err := conn.SetDeadline(time.Now().Add(tunnelDialTimeout)); err != nil {
+		return fmt.Errorf("set IP request deadline: %w", err)
+	}
 
 	msg := []byte{0x05, 0x01, 0xd0, 0x53, 0x00, 0x00, 0x53}
 	msg = append(msg, []byte(fmt.Sprintf(`{"sid":"%s"}`, c.SID))...)
-	if _, err := conn.Write(msg); err != nil {
-		return err
+	if err := writeAll(conn, msg); err != nil {
+		return fmt.Errorf("send IP authentication request: %w", err)
 	}
 
 	msg = []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	if _, err := conn.Write(msg); err != nil {
-		return err
+	if err := writeAll(conn, msg); err != nil {
+		return fmt.Errorf("send IP allocation request: %w", err)
 	}
 
 	for {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 
 	"inet.af/netaddr"
 )
@@ -29,6 +30,18 @@ type DomainResource struct {
 	NodeGroupID string
 }
 
+type DomainResourceSet []DomainResource
+
+func (resources DomainResourceSet) Match(port int, protocol string) (DomainResource, bool) {
+	for _, resource := range resources {
+		if resource.PortMin <= port && port <= resource.PortMax &&
+			(strings.EqualFold(resource.Protocol, protocol) || strings.EqualFold(resource.Protocol, "all")) {
+			return resource, true
+		}
+	}
+	return DomainResource{}, false
+}
+
 type ResourceAddress struct {
 	Host     string
 	PortMin  int
@@ -46,7 +59,7 @@ type Client interface {
 	IP() (net.IP, error)
 	IPSet() (*netaddr.IPSet, error)
 	IPResources() ([]IPResource, error)
-	DomainResources() (map[string]DomainResource, error)
+	DomainResources() (map[string]DomainResourceSet, error)
 	Resources() ([]Resource, error)
 	DNSResource() (map[string]net.IP, error)
 	DNSServer() (string, error)

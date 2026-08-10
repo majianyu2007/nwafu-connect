@@ -2,13 +2,12 @@ package hook_func
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"net"
 
 	"github.com/majianyu2007/nwafu-connect/configs"
 	"github.com/majianyu2007/nwafu-connect/log"
-	netstat "github.com/shirou/gopsutil/v4/net"
 )
 
 type InitialFunc func(ctx context.Context, config configs.Config) error
@@ -48,61 +47,56 @@ func IsInitial() bool {
 }
 
 func checkBindPortLegal(ctx context.Context, config configs.Config) error {
-	var checkTCPPorts, checkUDPPorts []uint32
-	var checkTCPPortsStr, checkUDPPortsStr []string
-	if !config.BrowserMode {
-		checkTCPPortsStr = []string{config.HTTPBind, config.SocksBind}
-		checkUDPPortsStr = []string{config.DNSServerBind}
+	if config.BrowserMode {
+		return nil
 	}
-
-	for _, addrStr := range checkTCPPortsStr {
-		if len(addrStr) != 0 {
-			addr, err := net.ResolveTCPAddr("tcp", addrStr)
-			if err != nil || addr.Port == 0 {
-				return errors.New(fmt.Sprintf("the value for %s in the config is incorrect. Please refer to the README for the correct format", addr))
-			}
-			checkTCPPorts = append(checkTCPPorts, uint32(addr.Port))
-		}
+	type binding struct {
+		name    string
+		network string
+		address string
 	}
-
-	for _, addrStr := range checkUDPPortsStr {
-		if len(addrStr) != 0 {
-			addr, err := net.ResolveUDPAddr("udp", addrStr)
-			if err != nil || addr.Port == 0 {
-				return errors.New(fmt.Sprintf("the value for %s in the config is incorrect. Please refer to the README for the correct format", addr))
-			}
-			checkUDPPorts = append(checkUDPPorts, uint32(addr.Port))
-		}
+	bindings := []binding{
+		{name: "HTTP proxy", network: "tcp", address: config.HTTPBind},
+		{name: "SOCKS5 proxy", network: "tcp", address: config.SocksBind},
+		{name: "DNS server", network: "udp", address: config.DNSServerBind},
 	}
-
-	for _, kind := range []string{"tcp", "udp"} {
-		var targetCheckPorts []uint32
-		if kind == "tcp" {
-			targetCheckPorts = checkTCPPorts
-		} else {
-			targetCheckPorts = checkUDPPorts
+	listenConfig := net.ListenConfig{}
+	closers := make([]io.Closer, 0, len(bindings))
+	defer func() {
+		for _, closer := range closers {
+			_ = closer.Close()
 		}
-		if len(targetCheckPorts) == 0 {
-			// Browser mode does not expose local SOCKS/HTTP/DNS listeners, so
-			// there is nothing to conflict with. Skipping the netstat scan
-			// also avoids the macOS "Local Network" permission prompt that
-			// gopsutil would otherwise trigger on first launch.
+	}()
+	for _, binding := range bindings {
+		if binding.address == "" {
 			continue
 		}
-		connectionStats, err := netstat.Connections(kind)
-		if err != nil {
-			// skip this check due to lack of information
-			return nil
-		}
-		for _, conn := range connectionStats {
-			for _, checkPort := range targetCheckPorts {
-				// darwin "*" means "0.0.0.0"
-				if checkPort == conn.Laddr.Port && (conn.Laddr.IP == "::" || conn.Laddr.IP == "*" ||
-					conn.Laddr.IP == "0.0.0.0" || conn.Laddr.IP == "127.0.0.1") {
-					return errors.New(fmt.Sprintf("%s port %s is already in use by process %d. Please choose a different port or terminate the existing process", kind, conn.Laddr.String(), conn.Pid))
-				}
+		switch binding.network {
+		case "tcp":
+			address, err := net.ResolveTCPAddr("tcp", binding.address)
+			if err != nil || address.Port == 0 {
+				return fmt.Errorf("invalid %s bind address %q", binding.name, binding.address)
 			}
+			listener, err := listenConfig.Listen(ctx, "tcp", binding.address)
+			if err != nil {
+				return fmt.Errorf("%s bind address %q is unavailable: %w", binding.name, binding.address, err)
+			}
+			closers = append(closers, listener)
+		case "udp":
+			address, err := net.ResolveUDPAddr("udp", binding.address)
+			if err != nil || address.Port == 0 {
+				return fmt.Errorf("invalid %s bind address %q", binding.name, binding.address)
+			}
+			connection, err := listenConfig.ListenPacket(ctx, "udp", binding.address)
+			if err != nil {
+				return fmt.Errorf("%s bind address %q is unavailable: %w", binding.name, binding.address, err)
+			}
+			closers = append(closers, connection)
 		}
 	}
 	return nil
+}
+
+func init() {
+	RegisterInitialFunc("check listener addresses", checkBindPortLegal)
 }

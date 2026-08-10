@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -43,9 +44,14 @@ func (s *Session) loginAuthPsw(username, password, loginDomain, graphCodeFile st
 func (s *Session) pswImpl(username, password, loginDomain, graphCheckCode string) (int, error) {
 	log.Println("Perform POST /passport/v1/auth/psw")
 
-	N := new(big.Int)
-	N.SetString(s.pubKey, 16)
-	E, _ := strconv.Atoi(s.pubKeyExp)
+	N, ok := new(big.Int).SetString(s.pubKey, 16)
+	if !ok || N.Sign() <= 0 {
+		return 0, fmt.Errorf("invalid password encryption public key")
+	}
+	E, err := strconv.Atoi(s.pubKeyExp)
+	if err != nil || E < 2 {
+		return 0, fmt.Errorf("invalid password encryption public exponent %q", s.pubKeyExp)
+	}
 	pub := &rsa.PublicKey{N: N, E: E}
 
 	msg := []byte(password + "_" + s.antiReplayRand)
@@ -64,10 +70,16 @@ func (s *Session) pswImpl(username, password, loginDomain, graphCheckCode string
 	if graphCheckCode != "" {
 		data["graphCheckCode"] = graphCheckCode
 	}
-	postBody, _ := json.Marshal(data)
+	postBody, err := json.Marshal(data)
+	if err != nil {
+		return 0, fmt.Errorf("encode password authentication request: %w", err)
+	}
 
 	u := s.baseURL + "/passport/v1/auth/psw"
-	req, _ := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(postBody))
+	req, err := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(postBody))
+	if err != nil {
+		return 0, fmt.Errorf("create password authentication request: %w", err)
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Content-Type", "application/json;charset=utf-8")
 	req.Header.Set("x-csrf-token", s.csrfToken)
@@ -81,7 +93,10 @@ func (s *Session) pswImpl(username, password, loginDomain, graphCheckCode string
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "password authentication", 8<<20)
+	if err != nil {
+		return 0, err
+	}
 	log.DebugPrintf("Received psw: %s", string(body))
 
 	var re struct {
@@ -92,16 +107,17 @@ func (s *Session) pswImpl(username, password, loginDomain, graphCheckCode string
 			GraphCheckCodeEnable int    `json:"graphCheckCodeEnable"`
 		} `json:"data"`
 	}
-	err = json.Unmarshal(body, &re)
-	if err != nil {
-		return 0, err
-	}
-	if re.Code != 0 || re.Message != "" {
-		log.Printf("Code: %d, Message: %s", re.Code, re.Message)
+	if err := json.Unmarshal(body, &re); err != nil {
+		return 0, fmt.Errorf("decode password authentication response: %w", err)
 	}
 	log.DebugPrintf("Parsed psw: %+v", re)
+	if re.Code != 0 && re.Data.GraphCheckCodeEnable == 0 {
+		return 0, fmt.Errorf("password authentication failed with code %d: %s", re.Code, re.Message)
+	}
+	if re.Data.GraphCheckCodeEnable == 0 && re.Data.Ticket == "" {
+		return 0, fmt.Errorf("password authentication response did not include a ticket")
+	}
 
 	s.ticket = re.Data.Ticket
-
 	return re.Data.GraphCheckCodeEnable, nil
 }

@@ -2,27 +2,35 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"net"
+	"strings"
+	"time"
 
-	"github.com/miekg/dns"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
 	"github.com/majianyu2007/nwafu-connect/log"
 	"github.com/majianyu2007/nwafu-connect/resolve"
+	"github.com/miekg/dns"
 )
 
 type DNSServer struct {
 	resolver *resolve.Resolver
 	localDNS []net.IP
+	ttl      uint32
 }
 
 func (d DNSServer) serveDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	m := new(dns.Msg)
 	m.SetReply(r)
 	m.Compress = false
-
-	_ = d.handleSingleDNSResolve(context.Background(), r, m)
-
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.handleSingleDNSResolve(ctx, r, m); err != nil {
+		m.Rcode = dns.RcodeServerFailure
+		log.DebugPrintf("DNS request failed: %v", err)
+	}
 	_ = w.WriteMsg(m)
 }
 
@@ -32,6 +40,9 @@ func (d DNSServer) HandleDnsMsg(ctx context.Context, requestMsg *dns.Msg) (*dns.
 	resMsg.Compress = false
 
 	err := d.handleSingleDNSResolve(ctx, requestMsg, resMsg)
+	if err != nil {
+		resMsg.Rcode = dns.RcodeServerFailure
+	}
 	return resMsg, err
 }
 
@@ -45,67 +56,82 @@ func (d DNSServer) CheckDnsHijack(dstIP net.IP) bool {
 }
 
 func (d DNSServer) handleSingleDNSResolve(ctx context.Context, requestMsg *dns.Msg, resMsg *dns.Msg) error {
-	switch requestMsg.Opcode {
-	case dns.OpcodeQuery:
-		for _, q := range requestMsg.Question {
-			name := q.Name
-			if len(name) > 1 && name[len(name)-1] == '.' {
-				name = name[:len(name)-1]
+	if requestMsg.Opcode != dns.OpcodeQuery {
+		return nil
+	}
+	for _, question := range requestMsg.Question {
+		if question.Qclass != dns.ClassINET {
+			continue
+		}
+		name := strings.TrimSuffix(question.Name, ".")
+		switch question.Qtype {
+		case dns.TypeA:
+			_, ip, err := d.resolver.Resolve(ctx, name)
+			if err != nil {
+				return fmt.Errorf("resolve A record for %s: %w", name, err)
 			}
-
-			switch q.Qtype {
-			case dns.TypeA:
-				if _, ip, err := d.resolver.Resolve(ctx, name); err == nil {
-					if ip.To4() != nil {
-						rr, err := dns.NewRR(fmt.Sprintf("%s A %s", q.Name, ip))
-						if err == nil {
-							resMsg.Answer = append(resMsg.Answer, rr)
-						}
-					}
-				}
-			case dns.TypeAAAA:
-				if _, ip, err := d.resolver.Resolve(ctx, name); err == nil {
-					if ip.To4() == nil {
-						rr, err := dns.NewRR(fmt.Sprintf("%s AAAA %s", q.Name, ip))
-						if err == nil {
-							resMsg.Answer = append(resMsg.Answer, rr)
-						}
-					}
-				}
+			if ip4 := ip.To4(); ip4 != nil {
+				resMsg.Answer = append(resMsg.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: d.ttl},
+					A:   ip4,
+				})
+			}
+		case dns.TypeAAAA:
+			_, ip, err := d.resolver.Resolve(ctx, name)
+			if err != nil {
+				return fmt.Errorf("resolve AAAA record for %s: %w", name, err)
+			}
+			if ip.To4() == nil {
+				resMsg.Answer = append(resMsg.Answer, &dns.AAAA{
+					Hdr:  dns.RR_Header{Name: question.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: d.ttl},
+					AAAA: ip.To16(),
+				})
 			}
 		}
 	}
 	return nil
 }
 
-func NewDnsServer(resolver *resolve.Resolver, dnsServers []string) DNSServer {
-	netIPs := make([]net.IP, len(dnsServers))
+func NewDnsServer(resolver *resolve.Resolver, dnsServers []string, ttl ...uint64) DNSServer {
+	netIPs := make([]net.IP, 0, len(dnsServers))
 	for _, dnsServer := range dnsServers {
-		if net.ParseIP(dnsServer) != nil {
-			netIPs = append(netIPs, net.ParseIP(dnsServer))
+		if ip := net.ParseIP(dnsServer); ip != nil {
+			netIPs = append(netIPs, ip)
 		}
 	}
-	return DNSServer{resolver: resolver, localDNS: netIPs}
+	responseTTL := uint32(60)
+	if len(ttl) > 0 {
+		responseTTL = uint32(min(ttl[0], uint64(math.MaxUint32)))
+	}
+	return DNSServer{resolver: resolver, localDNS: netIPs, ttl: responseTTL}
 }
 
-func ServeDNS(bindAddr string, dnsServer DNSServer) {
-	dns.HandleFunc(".", dnsServer.serveDNSRequest)
-
-	server := &dns.Server{Addr: bindAddr, Net: "udp"}
-	log.Printf("Starting DNS server at %s", server.Addr)
+func StartDNS(bindAddr string, dnsServer DNSServer) (string, error) {
+	packetConn, err := net.ListenPacket("udp", bindAddr)
+	if err != nil {
+		return "", fmt.Errorf("start DNS listener: %w", err)
+	}
+	server := &dns.Server{
+		PacketConn: packetConn,
+		Handler:    dns.HandlerFunc(dnsServer.serveDNSRequest),
+	}
+	actualAddress := packetConn.LocalAddr().String()
+	log.Printf("Starting DNS server at %s", actualAddress)
 
 	hook_func.RegisterTerminalFunc("CloseDNSListener", func(ctx context.Context) error {
 		log.Println("Closing DNS listener...")
-		if err := server.Shutdown(); err != nil {
+		if err := server.ShutdownContext(ctx); err != nil && !errors.Is(err, net.ErrClosed) {
 			return fmt.Errorf("close DNS listener failed: %w", err)
 		}
 		return nil
 	})
 
-	err := server.ListenAndServe()
-	if err != nil {
-		log.Println("DNS server listen failed: " + err.Error())
-	} else {
-		log.Println("DNS server closed")
-	}
+	go func() {
+		if err := server.ActivateAndServe(); err != nil && !errors.Is(err, net.ErrClosed) && !hook_func.IsTerminal() {
+			log.Printf("DNS server failed: %v", err)
+		} else {
+			log.Println("DNS server closed")
+		}
+	}()
+	return actualAddress, nil
 }

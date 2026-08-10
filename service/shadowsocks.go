@@ -25,55 +25,59 @@ import (
 const udpBufSize = 64 * 1024
 const udpTimeout = 5 * time.Minute
 
-func parseURL(s string) (addr, cipher, password string, err error) {
-	u, err := url.Parse(s)
+func parseURL(rawURL string) (addr, cipher, password string, err error) {
+	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		return
+		return "", "", "", fmt.Errorf("parse Shadowsocks URL: %w", err)
 	}
-
-	addr = u.Host
-	if u.User != nil {
-		cipher = u.User.Username()
-		password, _ = u.User.Password()
+	if parsedURL.Scheme != "ss" || parsedURL.Host == "" {
+		return "", "", "", fmt.Errorf("invalid Shadowsocks URL %q", rawURL)
 	}
-	return
+	addr = parsedURL.Host
+	if parsedURL.User != nil {
+		cipher = parsedURL.User.Username()
+		password, _ = parsedURL.User.Password()
+	}
+	return addr, cipher, password, nil
 }
 
-func ServeShadowsocks(dialer *dial.Dialer, url string) {
-	addr, cipher, password, err := parseURL(url)
+func StartShadowsocks(dialer *dial.Dialer, rawURL string) (string, error) {
+	addr, cipher, password, err := parseURL(rawURL)
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
-
-	ciph, err := core.PickCipher(cipher, []byte{}, password)
+	ciph, err := core.PickCipher(cipher, nil, password)
 	if err != nil {
-		log.Fatal(err)
+		return "", fmt.Errorf("configure Shadowsocks cipher: %w", err)
 	}
-
-	log.Printf("Shadowsocks server listening on %s", addr)
 
 	tcpListener, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatal(err)
+		return "", fmt.Errorf("start Shadowsocks TCP listener: %w", err)
 	}
-	udpPacketConn, err := net.ListenPacket("udp", addr)
+	actualAddress := tcpListener.Addr().String()
+	udpPacketConn, err := net.ListenPacket("udp", actualAddress)
 	if err != nil {
-		log.Fatal(err)
+		_ = tcpListener.Close()
+		return "", fmt.Errorf("start Shadowsocks UDP listener: %w", err)
 	}
+	log.Printf("Shadowsocks server listening on %s", actualAddress)
 
 	hook_func.RegisterTerminalFunc("CloseShadowsocksListener", func(ctx context.Context) error {
 		log.Println("Closing Shadowsocks listener...")
-		if err := tcpListener.Close(); err != nil {
-			return fmt.Errorf("close Shadowsocks TCP listener failed: %w", err)
+		var closeErrors []error
+		if err := tcpListener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErrors = append(closeErrors, fmt.Errorf("close Shadowsocks TCP listener: %w", err))
 		}
-		if err := udpPacketConn.Close(); err != nil {
-			return fmt.Errorf("close Shadowsocks UDP listener failed: %w", err)
+		if err := udpPacketConn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErrors = append(closeErrors, fmt.Errorf("close Shadowsocks UDP listener: %w", err))
 		}
-		return nil
+		return errors.Join(closeErrors...)
 	})
 
 	go tcpRemote(tcpListener, ciph.StreamConn, dialer)
-	udpRemote(udpPacketConn, ciph.PacketConn, dialer)
+	go udpRemote(udpPacketConn, ciph.PacketConn, dialer)
+	return actualAddress, nil
 }
 
 func tcpRemote(l net.Listener, shadow func(net.Conn) net.Conn, dialer *dial.Dialer) {

@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -70,17 +71,18 @@ func (s *Stack) AddRoute(target string) error {
 	}
 
 	command := exec.Command("route", "add", ip.String(), "mask", net.IP(ipv4Net.Mask).String(), s.endpoint.ip.String(), "metric", "1")
-	err = command.Run()
-	if err != nil {
+	if err = command.Run(); err != nil {
 		return err
 	}
-
+	hook_func.RegisterTerminalFunc("Delete route "+target, func(ctx context.Context) error {
+		return exec.Command("route", "delete", ip.String(), "mask", net.IP(ipv4Net.Mask).String(), s.endpoint.ip.String()).Run()
+	})
 	return nil
 }
 
 func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client.IPResource) (*Stack, error) {
 	s := &Stack{}
-	s.ipResources = ipResources
+	s.setIPResources(ipResources)
 	s.fakeIP = fakeIP
 
 	guid, err := windows.GUIDFromString(guid)
@@ -105,12 +107,14 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 
 	s.endpoint.ip, err = client.IP()
 	if err != nil {
+		dev.Close()
 		return nil, err
 	}
 
 	prefix, err := netip.ParsePrefix(s.endpoint.ip.String() + "/32")
 	if err != nil {
-		log.Printf("Parse prefix failed: %v", err) // Fail to set TUN IP is not a fatal problem, so we don't return an error
+		dev.Close()
+		return nil, fmt.Errorf("parse TUN address: %w", err)
 	}
 
 	err = link.SetIPAddresses([]netip.Prefix{prefix})
@@ -128,9 +132,10 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 	// We must add a route to 0.0.0.0/0, otherwise Windows will refuse to send packets to public network via TUN interface
 	// Set metric to 9999 to make sure normal traffic not go through TUN interface
 	command = exec.Command("route", "add", "0.0.0.0", "mask", "0.0.0.0", s.endpoint.ip.String(), "metric", "9999")
-	err = command.Run()
-	if err != nil {
-		log.Printf("Run %s failed: %v", command.String(), err)
+	defaultRouteErr := command.Run()
+	defaultRouteAdded := defaultRouteErr == nil
+	if defaultRouteErr != nil {
+		log.Printf("Run %s failed: %v", command.String(), defaultRouteErr)
 	}
 
 	command = exec.Command("netsh", "interface", "ipv4", "delete", "dnsservers", "NWAFU Connect", "all")
@@ -151,9 +156,13 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 	}
 
 	hook_func.RegisterTerminalFunc("Close Tun Device", func(ctx context.Context) error {
-		dev.Close()
-		closeCommand := exec.Command("netsh", "interface", "ipv4", "delete", "dnsservers", "NWAFU Connect", "all")
-		return closeCommand.Run()
+		var routeErr error
+		if defaultRouteAdded {
+			routeErr = exec.Command("route", "delete", "0.0.0.0", "mask", "0.0.0.0", s.endpoint.ip.String()).Run()
+		}
+		dnsErr := exec.Command("netsh", "interface", "ipv4", "delete", "dnsservers", "NWAFU Connect", "all").Run()
+		closeErr := dev.Close()
+		return errors.Join(routeErr, dnsErr, closeErr)
 	})
 	return s, nil
 }

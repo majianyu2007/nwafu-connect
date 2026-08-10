@@ -4,9 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -30,6 +33,7 @@ var conf configs.Config
 
 func main() {
 	log.Init()
+	initializeConfig()
 
 	if CommitID != "" {
 		log.Println("Start " + applicationName + " v" + nwafuConnectVersion + "-" + CommitID)
@@ -75,6 +79,12 @@ func main() {
 	}
 
 	vpnClient = atrustclient.NewClient(conf.Username, conf.SID, conf.DeviceID, conf.SignKey)
+	if closer, ok := vpnClient.(interface{ Close() }); ok {
+		hook_func.RegisterTerminalFunc("CloseVPNClient", func(ctx context.Context) error {
+			closer.Close()
+			return nil
+		})
+	}
 
 	log.Println("VPN protocol: aTrust")
 	clientData, err = vpnClient.(*atrustclient.Client).Setup(
@@ -95,27 +105,17 @@ func main() {
 		conf.UpdateBestNodesInterval,
 	)
 	if err != nil {
-		log.Fatalf("VPN client setup error: %s", err)
+		fatalWithCleanup("VPN client setup error: %s", err)
 	}
 
 	if conf.ClientDataFile != "" {
-		err = os.WriteFile(conf.ClientDataFile, clientData, 0600)
-		if err != nil {
-			log.Fatalf("Write client data file error: %s", err)
-		}
-		if err := os.Chmod(conf.ClientDataFile, 0600); err != nil {
-			log.Fatalf("Secure client data file error: %s", err)
+		if err := writePrivateFile(conf.ClientDataFile, clientData); err != nil {
+			fatalWithCleanup("Write client data file error: %s", err)
 		}
 		log.Printf("Client data saved to %s", conf.ClientDataFile)
 	}
 
 	log.Printf("VPN client started")
-	if closer, ok := vpnClient.(interface{ Close() }); ok {
-		hook_func.RegisterTerminalFunc("CloseVPNClient", func(ctx context.Context) error {
-			closer.Close()
-			return nil
-		})
-	}
 
 	ipResources, err := vpnClient.IPResources()
 	if err != nil {
@@ -146,30 +146,32 @@ func main() {
 	if conf.TCPTunnelMode {
 		vpnStack, err = tcptunnel.NewStack(vpnClient)
 		if err != nil {
-			log.Fatalf("TCP Tunnel stack setup error: %s", err)
+			fatalWithCleanup("TCP Tunnel stack setup error: %s", err)
 		}
 	} else if conf.TUNMode && !conf.BrowserMode {
 		vpnTUNStack, err := tun.NewStack(vpnClient, conf.DNSHijack, conf.FakeIP, ipResources)
 		if err != nil {
-			log.Fatalf("Tun stack setup error, make sure you are root user : %s", err)
+			fatalWithCleanup("Tun stack setup error, make sure you are root user: %s", err)
 		}
 
 		if conf.AddRoute && ipSet != nil {
 			for _, prefix := range ipSet.Prefixes() {
 				log.Printf("Add route to %s", prefix.String())
-				_ = vpnTUNStack.AddRoute(prefix.String())
+				if routeErr := vpnTUNStack.AddRoute(prefix.String()); routeErr != nil {
+					log.Printf("Add route to %s failed: %v", prefix.String(), routeErr)
+				}
 			}
 		}
 
 		if conf.FakeIP {
-			_ = vpnTUNStack.AddRoute("198.18.0.0/16")
+			if routeErr := vpnTUNStack.AddRoute("198.18.0.0/16"); routeErr != nil {
+				log.Printf("Add fake-IP route failed: %v", routeErr)
+			}
 		}
-
-		vpnStack = vpnTUNStack
 	} else {
 		vpnStack, err = gvisor.NewStack(vpnClient)
 		if err != nil {
-			log.Fatalf("gVisor stack setup error: %s", err)
+			fatalWithCleanup("gVisor stack setup error: %s", err)
 		}
 	}
 
@@ -205,32 +207,42 @@ func main() {
 		ipAddr := net.ParseIP(customDns.IP)
 		if ipAddr == nil {
 			log.Printf("Custom DNS for host name %s is invalid, SKIP", customDns.HostName)
+			continue
 		}
 		vpnResolver.SetPermanentDNS(customDns.HostName, ipAddr)
 		log.Printf("Add custom DNS: %s -> %s\n", customDns.HostName, customDns.IP)
 	}
-	localResolver := service.NewDnsServer(vpnResolver, []string{remoteDNSServer, conf.SecondaryDNSServer})
+	localResolver := service.NewDnsServer(vpnResolver, []string{remoteDNSServer, conf.SecondaryDNSServer}, conf.DNSTTL)
 	vpnStack.SetupResolve(localResolver)
 	vpnStack.SetupIPPool(vpnResolver.IPPool)
 
-	go vpnStack.Run()
+	stackDone := make(chan error, 1)
+	go func() {
+		runErr := vpnStack.Run()
+		if hook_func.IsTerminal() {
+			return
+		}
+		if runErr == nil {
+			runErr = errors.New("VPN network stack stopped unexpectedly")
+		}
+		stackDone <- runErr
+	}()
 
 	vpnDialer := dial.NewDialer(vpnStack, vpnResolver, ipResources, conf.BrowserMode, conf.DialDirectProxy)
 
-	var browserDone <-chan error
+	var browserDone <-chan struct{}
+	var browserErr error
 	if conf.BrowserMode {
 		proxyAddress, err := service.StartHTTP("127.0.0.1:0", vpnDialer)
 		if err != nil {
-			log.Printf("Managed browser proxy setup error: %s", err)
-			_ = hook_func.ExecTerminalFunc(context.Background())
+			fatalWithCleanup("Managed browser proxy setup error: %s", err)
 			return
 		}
 		startURL := conf.BrowserURL
 		if startURL == "" {
 			startURL, err = service.StartBrowserHome(resources, proxyAddress)
 			if err != nil {
-				log.Printf("Managed browser home page setup error: %s", err)
-				_ = hook_func.ExecTerminalFunc(context.Background())
+				fatalWithCleanup("Managed browser home page setup error: %s", err)
 				return
 			}
 		}
@@ -243,13 +255,23 @@ func main() {
 		})
 		if err != nil {
 			closeBrowser()
-			log.Printf("Managed browser setup error: %s", err)
-			_ = hook_func.ExecTerminalFunc(context.Background())
+			fatalWithCleanup("Managed browser setup error: %s", err)
 			return
 		}
+		done := make(chan struct{})
+		go func() {
+			browserErr = browserProcess.Wait()
+			close(done)
+		}()
+		browserDone = done
 		hook_func.RegisterTerminalFunc("CloseManagedBrowser", func(ctx context.Context) error {
 			closeBrowser()
-			return nil
+			select {
+			case <-done:
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("wait for managed browser to close: %w", ctx.Err())
+			}
 		})
 		if conf.BrowserStateFile != "" {
 			if err := managedbrowser.WriteState(conf.BrowserStateFile, managedbrowser.State{
@@ -259,8 +281,7 @@ func main() {
 				ProfileDir:   conf.BrowserProfileDir,
 			}); err != nil {
 				closeBrowser()
-				log.Printf("Managed browser state setup error: %s", err)
-				_ = hook_func.ExecTerminalFunc(context.Background())
+				fatalWithCleanup("Managed browser state setup error: %s", err)
 				return
 			}
 			hook_func.RegisterTerminalFunc("RemoveBrowserState", func(ctx context.Context) error {
@@ -268,38 +289,55 @@ func main() {
 			})
 		}
 		log.Printf("Managed browser started with %s", browserProcess.Executable())
-		done := make(chan error, 1)
-		go func() {
-			done <- browserProcess.Wait()
-		}()
-		browserDone = done
 	} else {
 		if conf.DNSServerBind != "" {
-			go service.ServeDNS(conf.DNSServerBind, localResolver)
+			if _, err := service.StartDNS(conf.DNSServerBind, localResolver); err != nil {
+				fatalWithCleanup("DNS server setup error: %s", err)
+				return
+			}
 		}
 		if conf.TUNMode {
-			clientIP, _ := vpnClient.IP()
-			go service.ServeDNS(clientIP.String()+":53", localResolver)
+			clientIP, err := vpnClient.IP()
+			if err != nil {
+				fatalWithCleanup("TUN DNS server setup error: %s", err)
+				return
+			}
+			if _, err := service.StartDNS(net.JoinHostPort(clientIP.String(), "53"), localResolver); err != nil {
+				fatalWithCleanup("TUN DNS server setup error: %s", err)
+				return
+			}
 		}
 		if conf.SocksBind != "" {
-			go service.ServeSocks5(conf.SocksBind, vpnDialer, vpnResolver, conf.SocksUser, conf.SocksPasswd)
+			if _, err := service.StartSocks5(conf.SocksBind, vpnDialer, vpnResolver, conf.SocksUser, conf.SocksPasswd); err != nil {
+				fatalWithCleanup("SOCKS5 server setup error: %s", err)
+				return
+			}
 		}
 		if conf.HTTPBind != "" {
 			if _, err := service.StartHTTP(conf.HTTPBind, vpnDialer); err != nil {
-				log.Fatalf("HTTP server setup error: %s", err)
+				fatalWithCleanup("HTTP server setup error: %s", err)
+				return
 			}
 		}
 		if conf.ShadowsocksURL != "" {
-			go service.ServeShadowsocks(vpnDialer, conf.ShadowsocksURL)
+			if _, err := service.StartShadowsocks(vpnDialer, conf.ShadowsocksURL); err != nil {
+				fatalWithCleanup("Shadowsocks server setup error: %s", err)
+				return
+			}
 		}
 		for _, portForwarding := range conf.PortForwardingList {
+			var forwardingErr error
 			switch portForwarding.NetworkType {
 			case "tcp":
-				go service.ServeTCPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
+				_, forwardingErr = service.StartTCPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
 			case "udp":
-				go service.ServeUDPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
+				_, forwardingErr = service.StartUDPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
 			default:
-				log.Printf("Port forwarding: unknown network type %s. Aborting", portForwarding.NetworkType)
+				log.Printf("Port forwarding: unknown network type %s; skipping", portForwarding.NetworkType)
+				continue
+			}
+			if forwardingErr != nil {
+				log.Printf("Port forwarding %s -> %s skipped: %v", portForwarding.BindAddress, portForwarding.RemoteAddress, forwardingErr)
 			}
 		}
 	}
@@ -324,35 +362,92 @@ func main() {
 	} else {
 		signal.Notify(quit, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	}
-	if browserDone == nil || conf.BrowserStayRunning {
-		if browserDone != nil {
-			go func() {
-				if err := <-browserDone; err != nil {
-					log.Printf("Managed browser error: %s", err)
-				} else {
-					log.Println("Managed browser closed; VPN session remains available from the tray")
-				}
-			}()
-		}
-		<-quit
-	} else {
-		select {
-		case <-quit:
-		case err := <-browserDone:
-			if err != nil {
-				log.Printf("Managed browser error: %s", err)
+	if browserDone != nil && conf.BrowserStayRunning {
+		detachedBrowserDone := browserDone
+		browserDone = nil
+		go func() {
+			<-detachedBrowserDone
+			if browserErr != nil {
+				log.Printf("Managed browser error: %s", browserErr)
 			} else {
-				log.Println("Managed browser closed")
+				log.Println("Managed browser closed; VPN session remains available from the tray")
 			}
+		}()
+	}
+	var runtimeErr error
+	select {
+	case <-quit:
+	case err := <-stackDone:
+		runtimeErr = fmt.Errorf("VPN network stack stopped: %w", err)
+	case <-browserDone:
+		if browserErr != nil {
+			runtimeErr = browserErr
+		} else {
+			log.Println("Managed browser closed")
 		}
 	}
 	signal.Stop(quit)
 	log.Printf("Shutdown %s ......", applicationName)
-	if errs := hook_func.ExecTerminalFunc(context.Background()); errs != nil {
-		for _, err := range errs {
-			log.Printf("Shutdown %s failed: %s", applicationName, err)
-		}
-	} else {
-		log.Printf("Shutdown %s success, Bye~", applicationName)
+	cleanupErr := errors.Join(hook_func.ExecTerminalFunc(context.Background())...)
+	if runtimeErr != nil || cleanupErr != nil {
+		log.Fatalf("Shutdown %s failed: %v", applicationName, errors.Join(runtimeErr, cleanupErr))
 	}
+	log.Printf("Shutdown %s success, Bye~", applicationName)
+}
+func writePrivateFile(path string, payload []byte) (returnErr error) {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return fmt.Errorf("create private file directory: %w", err)
+	}
+	temporary, err := os.CreateTemp(directory, ".nwafu-connect-*")
+	if err != nil {
+		return fmt.Errorf("create temporary private file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	defer func() {
+		if temporary != nil {
+			returnErr = errors.Join(returnErr, temporary.Close())
+		}
+	}()
+	if err := temporary.Chmod(0600); err != nil {
+		return fmt.Errorf("protect temporary private file: %w", err)
+	}
+	written, err := temporary.Write(payload)
+	if err != nil {
+		return fmt.Errorf("write temporary private file: %w", err)
+	}
+	if written != len(payload) {
+		return fmt.Errorf("write temporary private file: wrote %d of %d bytes", written, len(payload))
+	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("sync temporary private file: %w", err)
+	}
+	closeErr := temporary.Close()
+	temporary = nil
+	if closeErr != nil {
+		return fmt.Errorf("close temporary private file: %w", closeErr)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		if _, statErr := os.Stat(path); statErr != nil {
+			return fmt.Errorf("publish private file: %w", err)
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			return fmt.Errorf("replace private file: %w", removeErr)
+		}
+		if renameErr := os.Rename(temporaryPath, path); renameErr != nil {
+			return fmt.Errorf("publish replacement private file: %w", renameErr)
+		}
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("protect published private file: %w", err)
+	}
+	return nil
+}
+
+func fatalWithCleanup(format string, args ...any) {
+	for _, cleanupErr := range hook_func.ExecTerminalFunc(context.Background()) {
+		log.Printf("Cleanup after startup failure: %s", cleanupErr)
+	}
+	log.Fatalf(format, args...)
 }

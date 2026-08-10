@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -15,8 +14,13 @@ import (
 func (s *Session) completeTOTP(step authStep) (authStep, error) {
 	var code string
 	if s.totpSecret == "" {
-		log.Print("Please enter the TOTP code: ")
-		if _, err := fmt.Scanln(&code); err != nil {
+		var err error
+		code, err = readVerificationCode(
+			"输入动态验证码",
+			"请输入身份验证器当前显示的一次性验证码。",
+			false,
+		)
+		if err != nil {
 			return authStep{}, err
 		}
 	} else {
@@ -69,7 +73,7 @@ func (s *Session) checkTOTP(step authStep, code string) (authStep, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err = io.ReadAll(resp.Body)
+	body, err = readAuthHTTPResponse(resp, "TOTP authentication", 8<<20)
 	if err != nil {
 		return authStep{}, err
 	}

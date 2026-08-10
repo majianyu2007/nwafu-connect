@@ -45,3 +45,49 @@ func TestStoreDefaultsAndPrivateRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeRawPreservesOmittedCredentials(t *testing.T) {
+	root := t.TempDir()
+	store := Store{ConfigPath: filepath.Join(root, "config.toml"), PreferencesPath: filepath.Join(root, "desktop.json")}
+	configuration, _, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	password := "saved-secret"
+	configuration.Password = &password
+	merged, err := store.MergeRaw(configuration, []byte(`keep_alive_url = "https://library.example/health"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Password == nil || *merged.Password != password {
+		t.Fatal("MergeRaw() discarded an omitted saved password")
+	}
+	if merged.KeepAliveURL == nil || *merged.KeepAliveURL != "https://library.example/health" {
+		t.Fatalf("MergeRaw() keep_alive_url = %v", merged.KeepAliveURL)
+	}
+}
+
+func TestStoreCanReplaceExistingPrivateFiles(t *testing.T) {
+	root := t.TempDir()
+	store := Store{ConfigPath: filepath.Join(root, "config.toml"), PreferencesPath: filepath.Join(root, "desktop.json")}
+	configuration, preferences, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := "first", "second"
+	configuration.Username = &first
+	if err := store.Save(configuration, preferences); err != nil {
+		t.Fatal(err)
+	}
+	configuration.Username = &second
+	if err := store.Save(configuration, preferences); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Username == nil || *loaded.Username != second {
+		t.Fatalf("replaced username = %v, want %q", loaded.Username, second)
+	}
+}

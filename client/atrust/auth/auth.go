@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/majianyu2007/nwafu-connect/log"
@@ -76,14 +74,11 @@ type Session struct {
 }
 
 func NewSession(server string) *Session {
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Transport: tr, Jar: jar, Timeout: 20 * time.Second}
+	client := &http.Client{Transport: transport, Jar: jar, Timeout: 20 * time.Second}
 
 	rid := base64.StdEncoding.EncodeToString([]byte(server))
-
 	return &Session{
 		client:   client,
 		baseHost: server,
@@ -162,9 +157,12 @@ func (s *Session) withGraphCheckCode(process func(string) (int, error), graphCod
 
 		var graphCheckCode string
 		if graphCodeFile != "" {
-			if writeErr := os.WriteFile(graphCodeFile, imgData, 0644); writeErr != nil {
-				log.Printf("Warning: failed to write graph code image to %s: %v", graphCodeFile, writeErr)
+			if writeErr := os.WriteFile(graphCodeFile, imgData, 0600); writeErr != nil {
+				return fmt.Errorf("write graph check code image %q: %w", graphCodeFile, writeErr)
 			} else {
+				if chmodErr := os.Chmod(graphCodeFile, 0600); chmodErr != nil {
+					return fmt.Errorf("secure graph check code image: %w", chmodErr)
+				}
 				log.Printf("Graph check code saved to %s", graphCodeFile)
 			}
 
@@ -248,9 +246,9 @@ func (s *Session) completeSMS(step authStep) (authStep, error) {
 
 	phoneNumbers, err := s.phoneNumber(step.AuthID)
 	if err != nil {
-		log.Printf("Warning: failed to get phone number: %v", err)
+		log.Printf("Warning: failed to get registered phone number: %v", err)
 	} else if len(phoneNumbers) > 0 {
-		log.Printf("Phone number: %s", strings.Join(phoneNumbers, ", "))
+		log.Printf("SMS destination confirmed (%d registered number(s))", len(phoneNumbers))
 	}
 
 	if err := s.authSms(step); err != nil {
@@ -266,25 +264,42 @@ func (s *Session) completeSMS(step authStep) (authStep, error) {
 	return s.smsCheckCode(step)
 }
 
-func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, error) {
-	sid := ""
-	if len(opts.Cookies) > 0 {
-		for _, cookie := range opts.Cookies {
-			if cookie.Host == s.baseHost && cookie.Scheme == "https" && cookie.Name == "sid" {
-				sid = cookie.Value
-			}
-
-			c := &http.Cookie{
-				Name:  cookie.Name,
-				Value: cookie.Value,
-			}
-			s.client.Jar.SetCookies(&url.URL{Host: cookie.Host, Scheme: cookie.Scheme}, []*http.Cookie{c})
+func (s *Session) loginResult(username string) LoginResult {
+	result := LoginResult{Username: username}
+	for _, cookie := range s.client.Jar.Cookies(&url.URL{Host: s.baseHost, Scheme: "https"}) {
+		if cookie.Name == "sid" {
+			result.SID = cookie.Value
 		}
+		result.Cookies = append(result.Cookies, Cookie{
+			Host:   s.baseHost,
+			Scheme: "https",
+			Name:   cookie.Name,
+			Value:  cookie.Value,
+		})
+	}
+	return result
+}
+
+func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, error) {
+	for _, cookie := range opts.Cookies {
+		if cookie.Host != s.baseHost || cookie.Scheme != "https" || cookie.Name == "" {
+			continue
+		}
+		s.client.Jar.SetCookies(
+			&url.URL{Host: s.baseHost, Scheme: "https"},
+			[]*http.Cookie{{Name: cookie.Name, Value: cookie.Value}},
+		)
 	}
 
 	s.deviceID = opts.DeviceID
 	s.totpSecret = opts.TOTPSecret
-	s.env = base64.StdEncoding.EncodeToString([]byte(`{"deviceId":"` + opts.DeviceID + `"}`))
+	deviceEnvironment, err := json.Marshal(struct {
+		DeviceID string `json:"deviceId"`
+	}{DeviceID: opts.DeviceID})
+	if err != nil {
+		return LoginResult{}, fmt.Errorf("encode device environment: %w", err)
+	}
+	s.env = base64.StdEncoding.EncodeToString(deviceEnvironment)
 
 	isLogin, authInfoList, err := s.authConfig(false, true)
 	if err != nil {
@@ -293,11 +308,10 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 	if isLogin == 1 {
 		log.Println("Already logged in")
 		username, err := s.onlineInfo()
-		return LoginResult{
-			Username: username,
-			SID:      sid,
-			Cookies:  opts.Cookies,
-		}, err
+		if err != nil {
+			return LoginResult{}, err
+		}
+		return s.loginResult(username), nil
 	}
 
 	if method == nil {
@@ -336,23 +350,5 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 		return LoginResult{}, err
 	}
 
-	cookies := make([]Cookie, 0)
-	for _, cookie := range s.client.Jar.Cookies(&url.URL{Host: s.baseHost, Scheme: "https"}) {
-		if cookie.Name == "sid" {
-			sid = cookie.Value
-		}
-
-		cookies = append(cookies, Cookie{
-			Host:   s.baseHost,
-			Scheme: "https",
-			Name:   cookie.Name,
-			Value:  cookie.Value,
-		})
-	}
-
-	return LoginResult{
-		Username: username,
-		SID:      sid,
-		Cookies:  cookies,
-	}, nil
+	return s.loginResult(username), nil
 }

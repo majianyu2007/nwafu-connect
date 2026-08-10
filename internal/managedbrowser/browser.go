@@ -10,6 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
+	"time"
 )
 
 type Options struct {
@@ -28,8 +31,14 @@ type Process struct {
 }
 
 func Start(ctx context.Context, options Options) (*Process, error) {
-	if _, _, err := net.SplitHostPort(options.ProxyAddress); err != nil {
+	proxyHost, proxyPortText, err := net.SplitHostPort(options.ProxyAddress)
+	if err != nil {
 		return nil, fmt.Errorf("invalid browser proxy address %q: %w", options.ProxyAddress, err)
+	}
+	proxyIP := net.ParseIP(proxyHost)
+	proxyPort, portErr := strconv.Atoi(proxyPortText)
+	if proxyIP == nil || !proxyIP.IsLoopback() || portErr != nil || proxyPort < 1 || proxyPort > 65535 {
+		return nil, fmt.Errorf("browser proxy must be a loopback IP address with a valid port: %q", options.ProxyAddress)
 	}
 	startURL, err := url.Parse(options.StartURL)
 	if err != nil || startURL.Host == "" || (startURL.Scheme != "http" && startURL.Scheme != "https") {
@@ -46,13 +55,26 @@ func Start(ctx context.Context, options Options) (*Process, error) {
 		removeProfile = true
 	} else {
 		err = os.MkdirAll(profileDir, 0o700)
+		if err == nil {
+			err = os.Chmod(profileDir, 0o700)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("create browser profile: %w", err)
 	}
 
-	args := browserArgs(profileDir, options.ProxyAddress, startURL.String())
+	args := browserArgs(profileDir, options.ProxyAddress, startURL.String(), removeProfile)
 	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		if runtime.GOOS == "windows" {
+			return exec.Command("taskkill.exe", "/PID", strconv.Itoa(cmd.Process.Pid), "/T").Run()
+		}
+		return cmd.Process.Signal(os.Interrupt)
+	}
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -88,23 +110,41 @@ func (p *Process) Wait() error {
 	return nil
 }
 
-func browserArgs(profileDir, proxyAddress, startURL string) []string {
-	return []string{
+func browserArgs(profileDir, proxyAddress, startURL string, ephemeralProfile bool) []string {
+	args := []string{
 		"--user-data-dir=" + profileDir,
 		"--proxy-server=http://" + proxyAddress,
-		"--proxy-bypass-list=127.0.0.1;localhost",
+		"--proxy-bypass-list=" + proxyBypassList(startURL),
 		"--homepage=" + startURL,
 		"--show-home-button",
 		"--disable-quic",
 		"--disable-background-mode",
+		"--disable-background-networking",
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-		"--password-store=basic",
-		"--use-mock-keychain",
+	}
+	if ephemeralProfile {
+		args = append(args, "--password-store=basic", "--use-mock-keychain")
+	}
+	return append(args,
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--new-window",
 		startURL,
+	)
+}
+
+func proxyBypassList(startURL string) string {
+	const disableImplicitLoopbackBypass = "<-loopback>"
+	parsed, err := url.Parse(startURL)
+	if err != nil {
+		return disableImplicitLoopbackBypass
 	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	ip := net.ParseIP(host)
+	if host == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return disableImplicitLoopbackBypass + ";" + parsed.Scheme + "://" + parsed.Host
+	}
+	return disableImplicitLoopbackBypass
 }
 
 func FindExecutable(configured string) (string, error) {
@@ -135,14 +175,8 @@ func FindExecutable(configured string) (string, error) {
 func browserCandidates() []string {
 	switch runtime.GOOS {
 	case "darwin":
-		return []string{
-			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-			"/Applications/Chromium.app/Contents/MacOS/Chromium",
-			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-			"google-chrome",
-			"chromium",
-		}
+		home, _ := os.UserHomeDir()
+		return darwinBrowserCandidates(home)
 	case "windows":
 		candidates := []string{"msedge.exe", "chrome.exe", "brave.exe"}
 		for _, root := range []string{
@@ -173,4 +207,25 @@ func browserCandidates() []string {
 	default:
 		return nil
 	}
+}
+
+func darwinBrowserCandidates(home string) []string {
+	candidates := make([]string, 0, 10)
+	if home != "" {
+		userApplications := filepath.Join(home, "Applications")
+		candidates = append(candidates,
+			filepath.Join(userApplications, "Google Chrome.app", "Contents", "MacOS", "Google Chrome"),
+			filepath.Join(userApplications, "Microsoft Edge.app", "Contents", "MacOS", "Microsoft Edge"),
+			filepath.Join(userApplications, "Chromium.app", "Contents", "MacOS", "Chromium"),
+			filepath.Join(userApplications, "Brave Browser.app", "Contents", "MacOS", "Brave Browser"),
+		)
+	}
+	return append(candidates,
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+		"google-chrome",
+		"chromium",
+	)
 }

@@ -11,6 +11,8 @@ const (
 	ICMPTypePingResponse byte = 0x0
 )
 
+const ICMPHeaderSize = 4
+
 type ICMPPacket []byte
 
 func (p ICMPPacket) Type() ICMPType {
@@ -37,4 +39,8 @@ func (p ICMPPacket) SetChecksum(sum [2]byte) {
 func (p ICMPPacket) ResetChecksum() {
 	p.SetChecksum(zeroChecksum)
 	p.SetChecksum(Checksum(0, p))
+}
+
+func (p ICMPPacket) Valid() bool {
+	return len(p) >= ICMPHeaderSize
 }

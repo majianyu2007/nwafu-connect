@@ -10,10 +10,10 @@ import (
 	"sync"
 	"syscall"
 
-	tun "github.com/mythologyli/sing-tun"
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
 	"github.com/majianyu2007/nwafu-connect/log"
+	tun "github.com/mythologyli/sing-tun"
 )
 
 type Endpoint struct {
@@ -47,18 +47,19 @@ func (ep *Endpoint) Read(buf []byte) (int, error) {
 
 func (s *Stack) AddRoute(target string) error {
 	command := exec.Command("ip", "route", "add", target, "dev", s.endpoint.ifceName)
-	err := command.Run()
-	if err != nil {
+	if err := command.Run(); err != nil {
 		return err
 	}
-
+	hook_func.RegisterTerminalFunc("Delete route "+target, func(ctx context.Context) error {
+		return exec.Command("ip", "route", "del", target, "dev", s.endpoint.ifceName).Run()
+	})
 	return nil
 }
 
 func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client.IPResource) (*Stack, error) {
 	var err error
 	s := &Stack{}
-	s.ipResources = ipResources
+	s.setIPResources(ipResources)
 	s.fakeIP = fakeIP
 	s.endpoint = &Endpoint{
 		client: client,
@@ -102,7 +103,7 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 		},
 		Control: func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
-				if err := syscall.BindToDevice(int(fd), s.endpoint.ifceName); err != nil {
+				if bindErr := syscall.BindToDevice(int(fd), s.endpoint.ifceName); bindErr != nil {
 					log.Println("Warning: failed to bind to interface", s.endpoint.ifceName)
 				}
 			})
@@ -116,7 +117,7 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 		},
 		Control: func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
-				if err := syscall.BindToDevice(int(fd), s.endpoint.ifceName); err != nil {
+				if bindErr := syscall.BindToDevice(int(fd), s.endpoint.ifceName); bindErr != nil {
 					log.Println("Warning: failed to bind to interface", s.endpoint.ifceName)
 				}
 			})

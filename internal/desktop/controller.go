@@ -25,17 +25,19 @@ type Status struct {
 }
 
 type Controller struct {
-	paths       appdata.Paths
-	store       desktopconfig.Store
-	corePath    string
-	ctx         context.Context
-	cancel      context.CancelFunc
-	mutex       sync.Mutex
-	command     *exec.Cmd
-	commandDone chan struct{}
-	generation  uint64
-	status      chan Status
-	logFile     *os.File
+	paths          appdata.Paths
+	store          desktopconfig.Store
+	corePath       string
+	ctx            context.Context
+	cancel         context.CancelFunc
+	mutex          sync.Mutex
+	command        *exec.Cmd
+	commandDone    chan struct{}
+	generation     uint64
+	desiredRunning bool
+	closed         bool
+	status         chan Status
+	logFile        *os.File
 }
 
 func NewController(paths appdata.Paths, store desktopconfig.Store, configuredCore string) (*Controller, error) {
@@ -60,46 +62,69 @@ func (c *Controller) Configured() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	switch stringValue(configuration.AuthType, "auth/psw") {
-	case "auth/psw":
-		return stringValue(configuration.Username, "") != "" && stringValue(configuration.Password, "") != "", nil
-	case "auth/smsCheckCode":
-		return stringValue(configuration.Phone, "") != "", nil
-	case "auth/qywechat":
-		return true, nil
-	default:
-		return false, nil
-	}
+	return configured(configuration), nil
 }
 
 func (c *Controller) Start() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if c.closed {
+		return errors.New("桌面控制器已停止")
+	}
+	c.desiredRunning = true
 	if c.command != nil {
 		return nil
 	}
-	return c.startLocked()
+	if err := c.startLocked(); err != nil {
+		c.desiredRunning = false
+		return err
+	}
+	return nil
 }
 
 func (c *Controller) Restart() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if c.closed {
+		return errors.New("桌面控制器已停止")
+	}
+	c.desiredRunning = true
 	c.stopLocked()
-	return c.startLocked()
+	if err := c.startLocked(); err != nil {
+		c.desiredRunning = false
+		return err
+	}
+	return nil
 }
 
 func (c *Controller) Stop() error {
 	c.cancel()
 	c.mutex.Lock()
+	if c.closed {
+		c.mutex.Unlock()
+		return nil
+	}
+	c.closed = true
+	c.desiredRunning = false
 	c.stopLocked()
+	logFile := c.logFile
+	c.logFile = nil
 	c.mutex.Unlock()
-	if err := c.logFile.Close(); err != nil {
-		return fmt.Errorf("close desktop log: %w", err)
+	if logFile != nil {
+		if err := logFile.Close(); err != nil {
+			return fmt.Errorf("close desktop log: %w", err)
+		}
 	}
 	return nil
 }
 
 func (c *Controller) OpenBrowser() error {
+	c.mutex.Lock()
+	running := !c.closed && c.command != nil
+	c.mutex.Unlock()
+	if !running {
+		return errors.New("连接尚未启动")
+	}
 	state, err := managedbrowser.ReadState(c.paths.BrowserState)
 	if err != nil {
 		return fmt.Errorf("连接尚未就绪，请稍后重试: %w", err)
@@ -123,14 +148,11 @@ func (c *Controller) Activate() error {
 	if !running {
 		return c.Start()
 	}
-	if _, err := managedbrowser.ReadState(c.paths.BrowserState); err != nil {
-		return nil
-	}
 	return c.OpenBrowser()
 }
 
 func (c *Controller) startLocked() error {
-	if c.ctx.Err() != nil {
+	if c.closed || c.ctx.Err() != nil {
 		return errors.New("桌面控制器已停止")
 	}
 	configured, err := c.configuredLocked()
@@ -167,11 +189,14 @@ func (c *Controller) startLocked() error {
 
 func (c *Controller) stopLocked() {
 	if c.command == nil {
+		_ = managedbrowser.RemoveState(c.paths.BrowserState)
+		c.publish(Status{Message: "连接已停止"})
 		return
 	}
 	command := c.command
 	done := c.commandDone
 	c.command = nil
+	c.commandDone = nil
 	c.generation++
 	if command.Process != nil {
 		terminateProcess(command, done)
@@ -190,6 +215,7 @@ func (c *Controller) waitForCommand(command *exec.Cmd, generation uint64, done c
 	}
 	c.command = nil
 	c.commandDone = nil
+	_ = managedbrowser.RemoveState(c.paths.BrowserState)
 	c.mutex.Unlock()
 	if err != nil {
 		c.publish(Status{Message: "连接已中断，可从托盘重新连接"})
@@ -208,14 +234,25 @@ func (c *Controller) waitForReady(generation uint64) {
 		case <-c.ctx.Done():
 			return
 		case <-timeout.C:
-			c.publish(Status{Message: "连接耗时较长，请检查日志或认证信息"})
+			c.mutex.Lock()
+			current := c.generation == generation && c.command != nil
+			c.mutex.Unlock()
+			if current {
+				c.publish(Status{Message: "连接耗时较长，请检查日志或认证信息"})
+			}
 			return
 		case <-ticker.C:
+			c.mutex.Lock()
+			current := c.generation == generation && c.command != nil
+			c.mutex.Unlock()
+			if !current {
+				return
+			}
 			if _, err := managedbrowser.ReadState(c.paths.BrowserState); err != nil {
 				continue
 			}
 			c.mutex.Lock()
-			current := c.generation == generation && c.command != nil
+			current = c.generation == generation && c.command != nil
 			c.mutex.Unlock()
 			if current {
 				c.publish(Status{Connected: true, Message: "已连接 · 受管浏览器可用"})
@@ -237,11 +274,18 @@ func (c *Controller) monitorWakeAndNetwork() {
 		case now := <-ticker.C:
 			elapsed := now.Sub(lastTick)
 			lastTick = now
+			c.mutex.Lock()
+			desiredRunning := c.desiredRunning && !c.closed
+			c.mutex.Unlock()
+			if !desiredRunning {
+				wasOnline = true
+				continue
+			}
 			online := c.gatewayReachable()
 			if c.ctx.Err() != nil {
 				return
 			}
-			if shouldReconnect(elapsed, wasOnline, online) {
+			if shouldReconnect(desiredRunning, elapsed, wasOnline, online) {
 				_ = c.Restart()
 			}
 			wasOnline = online
@@ -249,8 +293,8 @@ func (c *Controller) monitorWakeAndNetwork() {
 	}
 }
 
-func shouldReconnect(elapsed time.Duration, wasOnline, online bool) bool {
-	return elapsed > 45*time.Second || (!wasOnline && online)
+func shouldReconnect(desiredRunning bool, elapsed time.Duration, wasOnline, online bool) bool {
+	return desiredRunning && (elapsed > 45*time.Second || (!wasOnline && online))
 }
 
 func (c *Controller) gatewayReachable() bool {
@@ -276,9 +320,6 @@ func (c *Controller) configuredLocked() (bool, error) {
 }
 
 func configured(configuration configs.ConfigTOML) bool {
-	if stringValue(configuration.ServerAddress, "") == "" {
-		return false
-	}
 	switch stringValue(configuration.AuthType, "auth/psw") {
 	case "auth/psw":
 		return stringValue(configuration.Username, "") != "" && stringValue(configuration.Password, "") != ""
@@ -293,12 +334,16 @@ func configured(configuration configs.ConfigTOML) bool {
 func (c *Controller) publish(status Status) {
 	select {
 	case c.status <- status:
+		return
 	default:
-		select {
-		case <-c.status:
-		default:
-		}
-		c.status <- status
+	}
+	select {
+	case <-c.status:
+	default:
+	}
+	select {
+	case c.status <- status:
+	default:
 	}
 }
 

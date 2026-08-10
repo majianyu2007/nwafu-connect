@@ -1,15 +1,52 @@
 package dial
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"io"
+	"net/http"
+	"net/url"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/majianyu2007/nwafu-connect/log"
 	"github.com/things-go/go-socks5/statute"
 )
+
+const proxyHandshakeTimeout = 10 * time.Second
+
+func beginProxyHandshake(ctx context.Context, connection net.Conn) (func() bool, error) {
+	deadline := time.Now().Add(proxyHandshakeTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := connection.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	return context.AfterFunc(ctx, func() {
+		_ = connection.SetDeadline(time.Now())
+	}), nil
+}
+
+func writeProxyBytes(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := writer.Write(payload)
+		if written < 0 || written > len(payload) {
+			return io.ErrShortWrite
+		}
+		payload = payload[written:]
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
 
 func (d *Dialer) dialDirectWithoutProxy(ctx context.Context, network, addr string) (net.Conn, error) {
 	goDialer := &net.Dialer{}
@@ -20,111 +57,153 @@ func (d *Dialer) dialDirectWithoutProxy(ctx context.Context, network, addr strin
 
 // usedAddr maybe ip:port or hostname:port, it doesn't matter
 func (d *Dialer) dialDirectWithHTTPProxy(ctx context.Context, usedAddr string) (net.Conn, error) {
-	goDialer := &net.Dialer{}
-	goDial := goDialer.DialContext
-
-	log.Printf("%s -> PROXY[%s]", usedAddr, d.dialDirectHTTPProxy)
-	conn, err := goDial(ctx, "tcp", d.dialDirectHTTPProxy)
-	if err != nil {
-		return nil, err
+	if _, _, err := net.SplitHostPort(usedAddr); err != nil {
+		return nil, fmt.Errorf("invalid HTTP proxy destination %q: %w", usedAddr, err)
 	}
-	_, _ = conn.Write([]byte("CONNECT " + usedAddr + " HTTP/1.1\r\n\r\n"))
-	connBuf := make([]byte, 256)
-	totalNum := 0
-	nowNum := 0
-	for !strings.Contains(string(connBuf), "\r\n\r\n") {
-		nowNum, err = conn.Read(connBuf[totalNum:])
-		totalNum += nowNum
-		if err != nil {
-			return nil, err
+	log.Printf("%s -> PROXY[%s]", usedAddr, d.dialDirectHTTPProxy)
+	connection, err := (&net.Dialer{Timeout: proxyHandshakeTimeout}).DialContext(ctx, "tcp", d.dialDirectHTTPProxy)
+	if err != nil {
+		return nil, fmt.Errorf("connect to HTTP proxy: %w", err)
+	}
+	keepConnection := false
+	defer func() {
+		if !keepConnection {
+			_ = connection.Close()
+		}
+	}()
+
+	stopCancellation, err := beginProxyHandshake(ctx, connection)
+	if err != nil {
+		return nil, fmt.Errorf("set HTTP proxy handshake deadline: %w", err)
+	}
+	defer stopCancellation()
+
+	request := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Opaque: usedAddr},
+		Host:   usedAddr,
+		Header: make(http.Header),
+	}
+	if err := request.Write(connection); err != nil {
+		return nil, fmt.Errorf("write HTTP proxy CONNECT request: %w", err)
+	}
+	reader := bufio.NewReader(connection)
+	response, err := http.ReadResponse(reader, request)
+	if err != nil {
+		return nil, fmt.Errorf("read HTTP proxy CONNECT response: %w", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP proxy CONNECT failed: %s", response.Status)
+	}
+	if !stopCancellation() {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
 	}
-	if strings.Contains(string(connBuf[:totalNum]), "200") {
-		return conn, nil
-	} else {
-		return nil, errors.New("PROXY CONNECT ERROR")
+	if err := connection.SetDeadline(time.Time{}); err != nil {
+		return nil, fmt.Errorf("clear HTTP proxy deadline: %w", err)
 	}
+
+	keepConnection = true
+	if reader.Buffered() != 0 {
+		return &bufferedProxyConn{Conn: connection, reader: reader}, nil
+	}
+	return connection, nil
+}
+
+type bufferedProxyConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedProxyConn) Read(buffer []byte) (int, error) {
+	return c.reader.Read(buffer)
 }
 
 func (d *Dialer) dialDirectWithSocksProxy(ctx context.Context, network, usedAddr string, isIP bool) (net.Conn, error) {
-	goDialer := &net.Dialer{}
-	goDial := goDialer.DialContext
-
 	log.Printf("%s -> PROXY[%s]", usedAddr, d.dialDirectSocksProxy)
-	conn, err := goDial(ctx, "tcp", d.dialDirectSocksProxy)
+	connection, err := (&net.Dialer{Timeout: proxyHandshakeTimeout}).DialContext(ctx, "tcp", d.dialDirectSocksProxy)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("connect to SOCKS5 proxy: %w", err)
 	}
-	_, err = conn.Write(statute.NewMethodRequest(statute.VersionSocks5, []byte{statute.MethodNoAuth}).Bytes())
+	keepConnection := false
+	defer func() {
+		if !keepConnection {
+			_ = connection.Close()
+		}
+	}()
+
+	stopCancellation, err := beginProxyHandshake(ctx, connection)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("set SOCKS5 proxy handshake deadline: %w", err)
 	}
-	methodReply, err := statute.ParseMethodReply(conn)
-	if err != nil || methodReply.Method != statute.MethodNoAuth || methodReply.Ver != statute.VersionSocks5 {
-		return nil, errors.New("SOCKS5 METHOD ERROR")
+	defer stopCancellation()
+
+	methodRequest := statute.NewMethodRequest(statute.VersionSocks5, []byte{statute.MethodNoAuth}).Bytes()
+	if err := writeProxyBytes(connection, methodRequest); err != nil {
+		return nil, fmt.Errorf("write SOCKS5 method request: %w", err)
+	}
+	methodReply, err := statute.ParseMethodReply(connection)
+	if err != nil {
+		return nil, fmt.Errorf("read SOCKS5 method response: %w", err)
+	}
+	if methodReply.Method != statute.MethodNoAuth || methodReply.Ver != statute.VersionSocks5 {
+		return nil, errors.New("SOCKS5 proxy rejected no-authentication method")
 	}
 
-	parts := strings.Split(usedAddr, ":")
-	dstAddr := statute.AddrSpec{}
+	host, portText, err := net.SplitHostPort(usedAddr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SOCKS5 destination %q: %w", usedAddr, err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid SOCKS5 destination port in %q", usedAddr)
+	}
+	destination := statute.AddrSpec{Port: port}
 	if isIP {
-		if len(parts) > 2 {
-			dstAddr.AddrType = statute.ATYPIPv6
-			dstAddr.IP = net.ParseIP(strings.TrimSuffix(usedAddr, ":"+parts[len(parts)-1]))
-			if dstAddr.IP == nil {
-				return nil, errors.New("Invalid address for socks proxy: " + usedAddr)
-			}
-			dstAddr.Port, err = strconv.Atoi(parts[len(parts)-1])
-			if err != nil {
-				return nil, errors.New("Invalid port for socks proxy: " + usedAddr)
-			}
-		} else if len(parts) == 2 {
-			dstAddr.AddrType = statute.ATYPIPv4
-			dstAddr.IP = net.ParseIP(parts[0])
-			if dstAddr.IP == nil {
-				return nil, errors.New("Invalid address for socks proxy: " + usedAddr)
-			}
-			dstAddr.Port, err = strconv.Atoi(parts[1])
-			if err != nil {
-				return nil, errors.New("Invalid port for socks proxy: " + usedAddr)
-			}
+		destination.IP = net.ParseIP(host)
+		if destination.IP == nil {
+			return nil, fmt.Errorf("invalid IP address for SOCKS5 proxy: %s", host)
+		}
+		if destination.IP.To4() == nil {
+			destination.AddrType = statute.ATYPIPv6
 		} else {
-			return nil, errors.New("Invalid address for socks proxy: " + usedAddr)
+			destination.AddrType = statute.ATYPIPv4
 		}
 	} else {
-		if len(parts) == 2 {
-			dstAddr.AddrType = statute.ATYPDomain
-			dstAddr.FQDN = parts[0]
-			dstAddr.Port, err = strconv.Atoi(parts[1])
-			if err != nil {
-				return nil, errors.New("Invalid port for socks proxy: " + usedAddr)
-			}
-		} else {
-			return nil, errors.New("Invalid address for socks proxy: " + usedAddr)
+		if host == "" || len(host) > 255 {
+			return nil, fmt.Errorf("invalid domain for SOCKS5 proxy: %q", host)
 		}
+		destination.AddrType = statute.ATYPDomain
+		destination.FQDN = host
 	}
-	var command byte
-	if network == "tcp" {
-		command = statute.CommandConnect
-	} else {
-		// not support yet!
-		command = statute.CommandAssociate
+	if network != "tcp" {
+		return nil, fmt.Errorf("SOCKS5 proxy does not support network %q", network)
 	}
-	req := statute.Request{
+	request := statute.Request{
 		Version:  statute.VersionSocks5,
-		Command:  command,
+		Command:  statute.CommandConnect,
 		Reserved: 0,
-		DstAddr:  dstAddr,
+		DstAddr:  destination,
 	}
-	_, err = conn.Write(req.Bytes())
-	if err != nil {
-		return nil, err
+	if err := writeProxyBytes(connection, request.Bytes()); err != nil {
+		return nil, fmt.Errorf("write SOCKS5 connect request: %w", err)
 	}
-	reply, err := statute.ParseReply(conn)
+	reply, err := statute.ParseReply(connection)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read SOCKS5 connect response: %w", err)
 	}
 	if reply.Version != statute.VersionSocks5 || reply.Response != statute.RepSuccess {
-		return nil, errors.New("SOCKS5 CONNECT ERROR")
+		return nil, fmt.Errorf("SOCKS5 proxy rejected connection with status %d", reply.Response)
 	}
-	return conn, nil
+	if !stopCancellation() {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+	}
+	if err := connection.SetDeadline(time.Time{}); err != nil {
+		return nil, fmt.Errorf("clear SOCKS5 proxy deadline: %w", err)
+	}
+	keepConnection = true
+	return connection, nil
 }

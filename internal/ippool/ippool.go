@@ -3,9 +3,12 @@ package ippool
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 )
+
+var ErrExhausted = errors.New("fake IP range exhausted")
 
 type entry[T any] struct {
 	ipUint   uint32
@@ -27,16 +30,23 @@ func NewIPPool[T any](cidr string) (*IPPool[T], error) {
 	if err != nil {
 		return nil, err
 	}
-
+	ip := ipNet.IP.To4()
 	ones, bits := ipNet.Mask.Size()
-	numIPs := uint32(1 << (bits - ones))
-	minIP := binary.BigEndian.Uint32(ipNet.IP)
+	if ip == nil || bits != 32 {
+		return nil, fmt.Errorf("fake IP pool requires an IPv4 CIDR: %q", cidr)
+	}
+	if ones > 30 {
+		return nil, fmt.Errorf("fake IP pool has no usable addresses: %q", cidr)
+	}
 
+	minIP := binary.BigEndian.Uint32(ip)
+	addressCount := uint64(1) << uint(bits-ones)
+	maxIP := uint32(uint64(minIP) + addressCount - 2)
 	return &IPPool[T]{
 		domainToIP: make(map[string]*entry[T]),
 		ipToDomain: make(map[uint32]*entry[T]),
 		minIP:      minIP,
-		maxIP:      minIP + numIPs - 1,
+		maxIP:      maxIP,
 		currentIP:  minIP + 2,
 	}, nil
 }
@@ -51,6 +61,21 @@ func (p *IPPool[T]) SetIPDomain(ip net.IP, domain string, res T) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if previous, ok := p.domainToIP[domain]; ok &&
+		previous.ipUint >= p.minIP+2 && previous.ipUint <= p.maxIP {
+		previous.resource = res
+		return nil
+	}
+	if previous, ok := p.domainToIP[domain]; ok {
+		if mapped := p.ipToDomain[previous.ipUint]; mapped == previous {
+			delete(p.ipToDomain, previous.ipUint)
+		}
+	}
+	if previous, ok := p.ipToDomain[ipUint]; ok {
+		if mapped := p.domainToIP[previous.domain]; mapped == previous {
+			delete(p.domainToIP, previous.domain)
+		}
+	}
 	newEntry := &entry[T]{
 		ipUint:   ipUint,
 		domain:   domain,
@@ -63,30 +88,35 @@ func (p *IPPool[T]) SetIPDomain(ip net.IP, domain string, res T) error {
 	return nil
 }
 
-func (p *IPPool[T]) GenerateIP(domain string, res T) net.IP {
+func (p *IPPool[T]) GenerateIP(domain string, res T) (net.IP, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if e, ok := p.domainToIP[domain]; ok {
-		return uint32ToIP(e.ipUint)
+	if existing, ok := p.domainToIP[domain]; ok {
+		if existing.ipUint >= p.minIP+2 && existing.ipUint <= p.maxIP {
+			return uint32ToIP(existing.ipUint), nil
+		}
+		if mapped := p.ipToDomain[existing.ipUint]; mapped == existing {
+			delete(p.ipToDomain, existing.ipUint)
+		}
+		delete(p.domainToIP, domain)
 	}
-
-	if p.currentIP > p.maxIP {
-		panic("Fake IP range exhausted")
+	for p.currentIP <= p.maxIP {
+		newIP := p.currentIP
+		p.currentIP++
+		if _, used := p.ipToDomain[newIP]; used {
+			continue
+		}
+		newEntry := &entry[T]{
+			ipUint:   newIP,
+			domain:   domain,
+			resource: res,
+		}
+		p.domainToIP[domain] = newEntry
+		p.ipToDomain[newIP] = newEntry
+		return uint32ToIP(newIP), nil
 	}
-
-	newIP := p.currentIP
-	newEntry := &entry[T]{
-		ipUint:   newIP,
-		domain:   domain,
-		resource: res,
-	}
-
-	p.domainToIP[domain] = newEntry
-	p.ipToDomain[newIP] = newEntry
-	p.currentIP++
-
-	return uint32ToIP(newIP)
+	return nil, ErrExhausted
 }
 
 func (p *IPPool[T]) GetDomain(ip net.IP) (string, T, bool) {

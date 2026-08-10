@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/client/atrust/auth"
+	"github.com/majianyu2007/nwafu-connect/internal/ipresource"
 	"github.com/majianyu2007/nwafu-connect/log"
 	"inet.af/netaddr"
 )
@@ -29,7 +31,8 @@ type Client struct {
 
 	serverAddress   string
 	ipResources     []client.IPResource
-	domainResources map[string]client.DomainResource
+	resourceIndex   *ipresource.Index
+	domainResources map[string]client.DomainResourceSet
 	resources       []client.Resource
 	ipSet           *netaddr.IPSet
 	dnsResource     map[string]net.IP
@@ -98,7 +101,7 @@ func (c *Client) IPResources() ([]client.IPResource, error) {
 	return c.ipResources, nil
 }
 
-func (c *Client) DomainResources() (map[string]client.DomainResource, error) {
+func (c *Client) DomainResources() (map[string]client.DomainResourceSet, error) {
 	if c.domainResources == nil {
 		return nil, errors.New("domain resources not available")
 	}
@@ -138,13 +141,19 @@ func randHex(n int) string {
 	return strings.ToUpper(hex.EncodeToString(b)[:n])
 }
 
-func GetAuthInfoList(serverAddress string, serverPort int) ([]auth.AuthInfo, error) {
-	var serverHost string
+func formatServerHost(serverAddress string, serverPort int) string {
+	host := strings.Trim(strings.TrimSpace(serverAddress), "[]")
 	if serverPort == 443 {
-		serverHost = serverAddress
-	} else {
-		serverHost = fmt.Sprintf("%s:%d", serverAddress, serverPort)
+		if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
 	}
+	return net.JoinHostPort(host, strconv.Itoa(serverPort))
+}
+
+func GetAuthInfoList(serverAddress string, serverPort int) ([]auth.AuthInfo, error) {
+	serverHost := formatServerHost(serverAddress, serverPort)
 	sess := auth.NewSession(serverHost)
 	return sess.GetAuthInfoList()
 }
@@ -178,18 +187,15 @@ func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted b
 		clientAuthData.DeviceID = strings.ToLower(randHex(32))
 	}
 
-	var serverHost string
-	if serverPort == 443 {
-		serverHost = serverAddress
-	} else {
-		serverHost = fmt.Sprintf("%s:%d", serverAddress, serverPort)
-	}
+	serverHost := formatServerHost(serverAddress, serverPort)
 	sess := auth.NewSession(serverHost)
 
-	sess.Login(nil, auth.LoginOptions{
+	if _, err := sess.Login(nil, auth.LoginOptions{
 		DeviceID: clientAuthData.DeviceID,
 		Cookies:  clientAuthData.Cookies,
-	})
+	}); err != nil {
+		return fmt.Errorf("restore aTrust session for device trust update: %w", err)
+	}
 	result, err := sess.QueryDevice()
 	if err != nil {
 		return err
@@ -238,12 +244,7 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 		c.ConnectionID = buildConnectionID(c.DeviceID)
 		c.SignKey = randHex(64)
 
-		var serverHost string
-		if serverPort == 443 {
-			serverHost = serverAddress
-		} else {
-			serverHost = fmt.Sprintf("%s:%d", serverAddress, serverPort)
-		}
+		serverHost := formatServerHost(serverAddress, serverPort)
 		sess := auth.NewSession(serverHost)
 
 		var err error
@@ -286,6 +287,9 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 		}
 		c.Username = loginResult.Username
 		c.SID = loginResult.SID
+		if c.SID == "" {
+			return nil, errors.New("login succeeded without an aTrust session ID")
+		}
 		clientAuthData.Cookies = loginResult.Cookies
 
 		resourceData, err = sess.ClientResource()
@@ -296,7 +300,7 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 
 		authData, err = json.Marshal(clientAuthData)
 		if err != nil {
-			log.Println("Error marshaling auth data:", err)
+			return nil, fmt.Errorf("encode client authentication data: %w", err)
 		}
 	}
 
@@ -316,7 +320,7 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 
 	l3Tunnel, err := NewL3Tunnel(c)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create L3 tunnel: %v", err)
+		return nil, fmt.Errorf("failed to create L3 tunnel: %w", err)
 	}
 	c.l3TunnelMu.Lock()
 	c.l3Tunnel = l3Tunnel

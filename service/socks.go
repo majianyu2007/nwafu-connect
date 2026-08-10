@@ -13,7 +13,7 @@ import (
 	"github.com/things-go/go-socks5"
 )
 
-func ServeSocks5(bindAddr string, dialer *dial.Dialer, resolver *resolve.Resolver, user string, password string) {
+func StartSocks5(bindAddr string, dialer *dial.Dialer, resolver *resolve.Resolver, user, password string) (string, error) {
 	var authMethods []socks5.Authenticator
 	if user != "" && password != "" {
 		authMethods = append(authMethods, socks5.UserPassAuthenticator{
@@ -32,27 +32,27 @@ func ServeSocks5(bindAddr string, dialer *dial.Dialer, resolver *resolve.Resolve
 		socks5.WithDial(dialer.DialIPPort),
 		socks5.WithLogger(socks5.NewLogger(log.NewLogger("[SOCKS5] "))),
 	)
-
-	log.Printf("SOCKS5 server listening on %s", bindAddr)
-
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		panic("SOCKS5 listen failed: " + err.Error())
+		return "", fmt.Errorf("start SOCKS5 listener: %w", err)
 	}
+	actualAddress := listener.Addr().String()
+	log.Printf("SOCKS5 server listening on %s", actualAddress)
 
 	hook_func.RegisterTerminalFunc("CloseSocks5Listener", func(ctx context.Context) error {
 		log.Println("Closing SOCKS5 listener...")
-		if err := listener.Close(); err != nil {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			return fmt.Errorf("close SOCKS5 listener failed: %w", err)
 		}
 		return nil
 	})
 
-	if err = server.Serve(listener); err != nil {
-		if errors.Is(err, net.ErrClosed) {
-			log.Println("SOCKS5 server closed")
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("SOCKS5 server failed: %v", err)
 		} else {
-			log.Println("SOCKS5 listen failed: " + err.Error())
+			log.Println("SOCKS5 server closed")
 		}
-	}
+	}()
+	return actualAddress, nil
 }

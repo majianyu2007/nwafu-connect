@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"strings"
 
@@ -34,10 +35,8 @@ func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 
 func parseTOMLConfig(configFile string, conf *configs.Config) error {
 	var confTOML configs.ConfigTOML
-
-	_, err := toml.DecodeFile(configFile, &confTOML)
-	if err != nil {
-		return fmt.Errorf("%s: error parsing the config file", applicationName)
+	if _, err := toml.DecodeFile(configFile, &confTOML); err != nil {
+		return fmt.Errorf("%s: parse config file %q: %w", applicationName, configFile, err)
 	}
 
 	conf.ServerAddress = getTOMLVal(confTOML.ServerAddress, defaultServerAddress)
@@ -46,13 +45,16 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 	conf.Password = getTOMLVal(confTOML.Password, "")
 	conf.TOTPSecret = getTOMLVal(confTOML.TOTPSecret, "")
 	conf.DisableRemoteDNS = getTOMLVal(confTOML.DisableRemoteDNS, false)
-	conf.SocksBind = getTOMLVal(confTOML.SocksBind, ":1080")
+	conf.SocksBind = getTOMLVal(confTOML.SocksBind, "127.0.0.1:1080")
 	conf.SocksUser = getTOMLVal(confTOML.SocksUser, "")
 	conf.SocksPasswd = getTOMLVal(confTOML.SocksPasswd, "")
-	conf.HTTPBind = getTOMLVal(confTOML.HTTPBind, ":1081")
+	conf.HTTPBind = getTOMLVal(confTOML.HTTPBind, "127.0.0.1:1081")
 	conf.BrowserMode = getTOMLVal(confTOML.BrowserMode, false)
 	conf.BrowserPath = getTOMLVal(confTOML.BrowserPath, "")
 	conf.BrowserURL = getTOMLVal(confTOML.BrowserURL, "")
+	conf.BrowserProfileDir = getTOMLVal(confTOML.BrowserProfileDir, "")
+	conf.BrowserStayRunning = getTOMLVal(confTOML.BrowserStayRunning, false)
+	conf.BrowserStateFile = getTOMLVal(confTOML.BrowserStateFile, "")
 	conf.ShadowsocksURL = getTOMLVal(confTOML.ShadowsocksURL, "")
 	conf.DialDirectProxy = getTOMLVal(confTOML.DialDirectProxy, "")
 	conf.TCPTunnelMode = getTOMLVal(confTOML.TCPTunnelMode, false)
@@ -81,45 +83,67 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 	conf.ResourceFile = getTOMLVal(confTOML.ResourceFile, "")
 	conf.UpdateBestNodesInterval = getTOMLVal(confTOML.UpdateBestNodesInterval, 300)
 
-	for _, singlePortForwarding := range confTOML.PortForwarding {
-		if singlePortForwarding.NetworkType == nil {
-			return fmt.Errorf("%s: network type is not set", applicationName)
+	conf.PortForwardingList = nil
+	for _, forwarding := range confTOML.PortForwarding {
+		if forwarding.NetworkType == nil || forwarding.BindAddress == nil || forwarding.RemoteAddress == nil {
+			return fmt.Errorf("%s: every port_forwarding entry requires network_type, bind_address, and remote_address", applicationName)
 		}
-
-		if singlePortForwarding.BindAddress == nil {
-			return fmt.Errorf("%s: bind address is not set", applicationName)
+		networkType := strings.ToLower(strings.TrimSpace(*forwarding.NetworkType))
+		if networkType != "tcp" && networkType != "udp" {
+			return fmt.Errorf("%s: unsupported port forwarding network type %q", applicationName, *forwarding.NetworkType)
 		}
-
-		if singlePortForwarding.RemoteAddress == nil {
-			return fmt.Errorf("%s: remote address is not set", applicationName)
+		bindAddress := strings.TrimSpace(*forwarding.BindAddress)
+		remoteAddress := strings.TrimSpace(*forwarding.RemoteAddress)
+		if _, _, err := net.SplitHostPort(bindAddress); err != nil {
+			return fmt.Errorf("%s: invalid port forwarding bind address %q: %w", applicationName, bindAddress, err)
 		}
-
+		if _, _, err := net.SplitHostPort(remoteAddress); err != nil {
+			return fmt.Errorf("%s: invalid port forwarding remote address %q: %w", applicationName, remoteAddress, err)
+		}
 		conf.PortForwardingList = append(conf.PortForwardingList, configs.SinglePortForwarding{
-			NetworkType:   *singlePortForwarding.NetworkType,
-			BindAddress:   *singlePortForwarding.BindAddress,
-			RemoteAddress: *singlePortForwarding.RemoteAddress,
+			NetworkType:   networkType,
+			BindAddress:   bindAddress,
+			RemoteAddress: remoteAddress,
 		})
 	}
 
-	for _, singleCustomDns := range confTOML.CustomDNS {
-		if singleCustomDns.HostName == nil {
-			return fmt.Errorf("%s: host name is not set", applicationName)
+	conf.CustomDNSList = nil
+	for _, customDNS := range confTOML.CustomDNS {
+		if customDNS.HostName == nil || customDNS.IP == nil {
+			return fmt.Errorf("%s: every custom_dns entry requires host_name and ip", applicationName)
 		}
-
-		if singleCustomDns.IP == nil {
-			return fmt.Errorf("%s: IP is not set", applicationName)
+		hostName := strings.TrimSpace(*customDNS.HostName)
+		ip := strings.TrimSpace(*customDNS.IP)
+		if hostName == "" || net.ParseIP(ip) == nil {
+			return fmt.Errorf("%s: invalid custom DNS entry %q -> %q", applicationName, hostName, ip)
 		}
-
 		conf.CustomDNSList = append(conf.CustomDNSList, configs.SingleCustomDNS{
-			HostName: *singleCustomDns.HostName,
-			IP:       *singleCustomDns.IP,
+			HostName: hostName,
+			IP:       ip,
 		})
 	}
-
 	return nil
 }
 
-func init() {
+func splitForwardingAddresses(value string) (string, string, bool) {
+	for index, char := range value {
+		if char != '-' {
+			continue
+		}
+		bindAddress := strings.TrimSpace(value[:index])
+		remoteAddress := strings.TrimSpace(value[index+1:])
+		if _, _, err := net.SplitHostPort(bindAddress); err != nil {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(remoteAddress); err != nil {
+			continue
+		}
+		return bindAddress, remoteAddress, true
+	}
+	return "", "", false
+}
+
+func initializeConfig() {
 	configFile, tcpPortForwarding, udpPortForwarding, customDns := "", "", "", ""
 	showVersion := false
 	atrustAuthInfo := false
@@ -132,10 +156,10 @@ func init() {
 	flag.StringVar(&conf.Password, "password", "", "Your password")
 	flag.StringVar(&conf.TOTPSecret, "totp-secret", "", "TOTP secret")
 	flag.BoolVar(&conf.DisableRemoteDNS, "disable-remote-dns", false, "Use local DNS instead of remote DNS")
-	flag.StringVar(&conf.SocksBind, "socks-bind", ":1080", "The address SOCKS5 server listens on (e.g. 127.0.0.1:1080)")
+	flag.StringVar(&conf.SocksBind, "socks-bind", "127.0.0.1:1080", "The address SOCKS5 server listens on (e.g. 127.0.0.1:1080)")
 	flag.StringVar(&conf.SocksUser, "socks-user", "", "SOCKS5 username, default is don't use auth")
 	flag.StringVar(&conf.SocksPasswd, "socks-passwd", "", "SOCKS5 password, default is don't use auth")
-	flag.StringVar(&conf.HTTPBind, "http-bind", ":1081", "The address HTTP server listens on (e.g. 127.0.0.1:1081)")
+	flag.StringVar(&conf.HTTPBind, "http-bind", "127.0.0.1:1081", "The address HTTP server listens on (e.g. 127.0.0.1:1081)")
 	flag.BoolVar(&conf.BrowserMode, "browser-mode", false, "Launch a dedicated browser through a private aTrust proxy")
 	flag.StringVar(&conf.BrowserPath, "browser-path", "", "Chromium-based browser executable; auto-detected when empty")
 	flag.StringVar(&conf.BrowserURL, "browser-url", "", "Initial URL for browser mode; empty shows server-issued resources")
@@ -179,12 +203,41 @@ func init() {
 	flag.BoolVar(&atrustUntrustDevice, "untrust-device", false, "Untrust the current device for aTrust with client data, but not connect")
 
 	flag.Parse()
+	explicitFlags := make(map[string]string)
+	flag.CommandLine.Visit(func(setFlag *flag.Flag) {
+		explicitFlags[setFlag.Name] = setFlag.Value.String()
+	})
 
 	if showVersion {
 		fmt.Printf("%s v%s\n", applicationName, nwafuConnectVersion)
 		os.Exit(0)
 	}
 
+	if configFile != "" {
+		err := parseTOMLConfig(configFile, &conf)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+	for name, value := range explicitFlags {
+		if name == "config" {
+			continue
+		}
+		if err := flag.CommandLine.Set(name, value); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: apply command-line option %s: %v\n", applicationName, name, err)
+			os.Exit(1)
+		}
+	}
+	conf.ServerAddress = strings.TrimSpace(conf.ServerAddress)
+	if conf.ServerPort < 1 || conf.ServerPort > 65535 {
+		fmt.Fprintf(os.Stderr, "%s: server port must be between 1 and 65535\n", applicationName)
+		os.Exit(1)
+	}
+	if conf.UpdateBestNodesInterval < 0 {
+		fmt.Fprintf(os.Stderr, "%s: best-node update interval cannot be negative\n", applicationName)
+		os.Exit(1)
+	}
 	if atrustAuthInfo {
 		log.SetOutput(io.Discard) // suppress log
 		info, err := atrust.GetAuthInfoList(conf.ServerAddress, conf.ServerPort)
@@ -225,63 +278,62 @@ func init() {
 		os.Exit(0)
 	}
 
-	if configFile != "" {
-		err := parseTOMLConfig(configFile, &conf)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	} else {
-		if tcpPortForwarding != "" {
-			forwardingStringList := strings.Split(tcpPortForwarding, ",")
-			for _, forwardingString := range forwardingStringList {
-				addressStringList := strings.Split(forwardingString, "-")
-				if len(addressStringList) != 2 {
-					fmt.Fprintf(os.Stderr, "%s: wrong TCP port forwarding format\n", applicationName)
-					os.Exit(1)
-				}
-
-				conf.PortForwardingList = append(conf.PortForwardingList, configs.SinglePortForwarding{
-					NetworkType:   "tcp",
-					BindAddress:   addressStringList[0],
-					RemoteAddress: addressStringList[1],
-				})
+	_, tcpForwardingOverride := explicitFlags["tcp-port-forwarding"]
+	_, udpForwardingOverride := explicitFlags["udp-port-forwarding"]
+	if tcpForwardingOverride || udpForwardingOverride {
+		forwardingList := conf.PortForwardingList[:0]
+		for _, forwarding := range conf.PortForwardingList {
+			if (forwarding.NetworkType == "tcp" && tcpForwardingOverride) ||
+				(forwarding.NetworkType == "udp" && udpForwardingOverride) {
+				continue
 			}
+			forwardingList = append(forwardingList, forwarding)
 		}
-
-		if udpPortForwarding != "" {
-			forwardingStringList := strings.Split(udpPortForwarding, ",")
-			for _, forwardingString := range forwardingStringList {
-				addressStringList := strings.Split(forwardingString, "-")
-				if len(addressStringList) != 2 {
-					fmt.Fprintf(os.Stderr, "%s: wrong UDP port forwarding format\n", applicationName)
-					os.Exit(1)
-				}
-
-				conf.PortForwardingList = append(conf.PortForwardingList, configs.SinglePortForwarding{
-					NetworkType:   "udp",
-					BindAddress:   addressStringList[0],
-					RemoteAddress: addressStringList[1],
-				})
+		conf.PortForwardingList = forwardingList
+	}
+	if tcpPortForwarding != "" {
+		for _, forwardingString := range strings.Split(tcpPortForwarding, ",") {
+			bindAddress, remoteAddress, ok := splitForwardingAddresses(forwardingString)
+			if !ok {
+				fmt.Fprintf(os.Stderr, "%s: wrong TCP port forwarding format\n", applicationName)
+				os.Exit(1)
 			}
+			conf.PortForwardingList = append(conf.PortForwardingList, configs.SinglePortForwarding{
+				NetworkType:   "tcp",
+				BindAddress:   bindAddress,
+				RemoteAddress: remoteAddress,
+			})
 		}
-
-		if customDns != "" {
-			dnsList := strings.Split(customDns, ",")
-			for _, dnsString := range dnsList {
-				dnsStringSplit := strings.Split(dnsString, ":")
-				if len(dnsStringSplit) != 2 {
-					fmt.Fprintf(os.Stderr, "%s: wrong custom DNS format\n", applicationName)
-					os.Exit(1)
-				}
-
-				conf.CustomDNSList = append(conf.CustomDNSList, configs.SingleCustomDNS{
-					HostName: dnsStringSplit[0],
-					IP:       dnsStringSplit[1],
-				})
+	}
+	if udpPortForwarding != "" {
+		for _, forwardingString := range strings.Split(udpPortForwarding, ",") {
+			bindAddress, remoteAddress, ok := splitForwardingAddresses(forwardingString)
+			if !ok {
+				fmt.Fprintf(os.Stderr, "%s: wrong UDP port forwarding format\n", applicationName)
+				os.Exit(1)
 			}
+			conf.PortForwardingList = append(conf.PortForwardingList, configs.SinglePortForwarding{
+				NetworkType:   "udp",
+				BindAddress:   bindAddress,
+				RemoteAddress: remoteAddress,
+			})
 		}
-
+	}
+	if _, customDNSOverride := explicitFlags["custom-dns"]; customDNSOverride {
+		conf.CustomDNSList = nil
+	}
+	if customDns != "" {
+		for _, dnsString := range strings.Split(customDns, ",") {
+			hostName, ip, ok := strings.Cut(dnsString, ":")
+			if !ok || strings.TrimSpace(hostName) == "" || net.ParseIP(strings.TrimSpace(ip)) == nil {
+				fmt.Fprintf(os.Stderr, "%s: wrong custom DNS format\n", applicationName)
+				os.Exit(1)
+			}
+			conf.CustomDNSList = append(conf.CustomDNSList, configs.SingleCustomDNS{
+				HostName: strings.TrimSpace(hostName),
+				IP:       strings.TrimSpace(ip),
+			})
+		}
 	}
 
 	missing := conf.ServerAddress == ""
@@ -290,6 +342,10 @@ func init() {
 		missing = missing || conf.Username == "" || conf.Password == ""
 	case "auth/smsCheckCode":
 		missing = missing || conf.Phone == ""
+	case "auth/qywechat", "":
+	default:
+		fmt.Fprintf(os.Stderr, "%s: unsupported auth type %q\n", applicationName, conf.AuthType)
+		os.Exit(1)
 	}
 	if missing {
 		missing = conf.SID == "" || conf.DeviceID == "" || conf.ResourceFile == ""

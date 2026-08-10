@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,10 +16,12 @@ func (s *Session) completeCustomSMS() (authStep, error) {
 		return authStep{}, err
 	}
 
-	code := ""
-	log.Println("Tips: Add prefix '$' to sms code to skip secondary authentication")
-	log.Print("Please enter the SMS verification code: ")
-	if _, err := fmt.Scanln(&code); err != nil {
+	code, err := readVerificationCode(
+		"输入短信验证码",
+		"请输入学校网关发送到已登记手机的验证码。",
+		true,
+	)
+	if err != nil {
 		return authStep{}, err
 	}
 
@@ -59,7 +60,7 @@ func (s *Session) sendCustomSMS() error {
 	}
 	defer resp.Body.Close()
 
-	body, err = io.ReadAll(resp.Body)
+	body, err = readAuthHTTPResponse(resp, "custom SMS send", 8<<20)
 	if err != nil {
 		return err
 	}
@@ -123,7 +124,7 @@ func (s *Session) customSMSCheckCode(code string, skipSecondaryAuth bool) (authS
 	}
 	defer resp.Body.Close()
 
-	body, err = io.ReadAll(resp.Body)
+	body, err = readAuthHTTPResponse(resp, "custom SMS verification", 8<<20)
 	if err != nil {
 		return authStep{}, err
 	}

@@ -3,21 +3,21 @@
 package tun
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 
-	"github.com/miekg/dns"
-	tun "github.com/mythologyli/sing-tun"
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
 	"github.com/majianyu2007/nwafu-connect/internal/ippool"
+	"github.com/majianyu2007/nwafu-connect/internal/ipresource"
 	"github.com/majianyu2007/nwafu-connect/internal/zcdns"
 	"github.com/majianyu2007/nwafu-connect/internal/zctcpip"
 	"github.com/majianyu2007/nwafu-connect/log"
 	"github.com/majianyu2007/nwafu-connect/resolve"
+	"github.com/miekg/dns"
+	tun "github.com/mythologyli/sing-tun"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	gvisorstack "gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -25,109 +25,121 @@ import (
 
 const MTU uint32 = 1400
 
+var errTunnelIO = errors.New("VPN tunnel I/O failed")
+
 type Stack struct {
 	endpoint            *Endpoint
 	tcpListenerEndpoint *TCPListenerEndpoint
 	tcpListenerStack    *gvisorstack.Stack
 	l3Conn              io.ReadWriteCloser
 	resolve             zcdns.LocalServer
-	ipResources         []client.IPResource
-	ipPool              *ippool.IPPool[client.DomainResource]
+	resourceIndex       *ipresource.Index
+	ipPool              *ippool.IPPool[client.DomainResourceSet]
 	fakeIP              bool
+}
+
+func (s *Stack) setIPResources(resources []client.IPResource) {
+	s.resourceIndex = ipresource.New(resources)
 }
 
 func (s *Stack) SetupResolve(r zcdns.LocalServer) {
 	s.resolve = r
 }
 
-func (s *Stack) SetupIPPool(ipPool *ippool.IPPool[client.DomainResource]) {
+func (s *Stack) SetupIPPool(ipPool *ippool.IPPool[client.DomainResourceSet]) {
 	s.ipPool = ipPool
 }
 
-func (s *Stack) Run() {
+func (s *Stack) Run() error {
 	if s.endpoint.client.CanUseTCPTunnel() {
-		err := s.CreateTCPListener()
-		if err != nil {
-			panic(err)
+		if err := s.CreateTCPListener(); err != nil {
+			return fmt.Errorf("create TCP tunnel listener: %w", err)
 		}
 		s.StartTCPListener()
 	}
 
-	var connErr error
-	s.l3Conn, connErr = s.endpoint.client.NewL3Conn()
-	if connErr != nil {
-		panic(connErr)
+	var err error
+	s.l3Conn, err = s.endpoint.client.NewL3Conn()
+	if err != nil {
+		return fmt.Errorf("create L3 tunnel connection: %w", err)
 	}
 	defer s.l3Conn.Close()
 
-	// Read from VPN server and send to TUN stack
+	runErrors := make(chan error, 2)
 	go func() {
 		for {
 			buf := make([]byte, MTU+tun.PacketOffset)
 			n, err := s.l3Conn.Read(buf)
 			if err != nil {
-				if hook_func.IsTerminal() {
-					return
-				}
-				panic(err)
+				runErrors <- fmt.Errorf("read from VPN server: %w", err)
+				return
 			}
 			log.DebugPrintf("Recv: read %d bytes", n)
 			log.DebugDumpHex(buf[:n])
 
-			err = s.endpoint.Write(buf[:n])
-			if err != nil {
-				if hook_func.IsTerminal() {
-					return
-				} else {
-					log.Printf("Error occurred while writing to TUN stack: %v", err)
-					panic(err)
-				}
+			if err := s.endpoint.Write(buf[:n]); err != nil {
+				runErrors <- fmt.Errorf("write to TUN interface: %w", err)
+				return
 			}
 		}
 	}()
 
-	// Read from TUN stack and send to VPN server
-	for {
-		buf := make([]byte, MTU+tun.PacketOffset)
-		n, err := s.endpoint.Read(buf)
-		if err != nil {
-			if hook_func.IsTerminal() {
+	go func() {
+		for {
+			buf := make([]byte, MTU+tun.PacketOffset)
+			n, err := s.endpoint.Read(buf)
+			if err != nil {
+				runErrors <- fmt.Errorf("read from TUN interface: %w", err)
 				return
-			} else {
-				log.Printf("Error occurred while reading from TUN stack: %v", err)
-				panic(err)
 			}
-		}
+			if n < tun.PacketOffset+zctcpip.IPv4PacketMinLength {
+				continue
+			}
 
-		if n < zctcpip.IPv4PacketMinLength {
-			continue
-		}
-
-		// whether this should be a blocking operation?
-		packet := buf[tun.PacketOffset:n]
-		switch ipVersion := packet[0] >> 4; ipVersion {
-		case zctcpip.IPv4Version:
-			err = s.processIPV4(packet)
-		default:
-			err = fmt.Errorf("unsupport IP version %d", ipVersion)
-		}
-		if err != nil {
+			packet := buf[tun.PacketOffset:n]
+			switch ipVersion := packet[0] >> 4; ipVersion {
+			case zctcpip.IPv4Version:
+				err = s.processIPV4(packet)
+			default:
+				err = fmt.Errorf("unsupported IP version %d", ipVersion)
+			}
+			if err == nil {
+				continue
+			}
+			if errors.Is(err, errTunnelIO) {
+				runErrors <- err
+				return
+			}
 			log.DebugPrintf("Error occurred while processing IP packet: %v", err)
-			continue
 		}
+	}()
 
+	err = <-runErrors
+	if hook_func.IsTerminal() {
+		return nil
 	}
+	return err
 }
 
 func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
+	if !packet.Valid() {
+		return fmt.Errorf("invalid IPv4 packet")
+	}
 	protocol := ""
 	port := -1
 	switch packet.Protocol() {
 	case zctcpip.TCP:
+		tcpPacket := zctcpip.TCPPacket(packet.Payload())
+		if !tcpPacket.Valid() {
+			return fmt.Errorf("invalid TCP packet")
+		}
 		protocol = "tcp"
-		port = int(zctcpip.TCPPacket(packet.Payload()).DestinationPort())
+		port = int(tcpPacket.DestinationPort())
 	case zctcpip.UDP:
 		udpPacket := zctcpip.UDPPacket(packet.Payload())
+		if !udpPacket.Valid() {
+			return fmt.Errorf("invalid UDP packet")
+		}
 		if s.shouldHijackUDPDns(packet, udpPacket) {
 			newPacket := make(zctcpip.IPv4Packet, len(packet))
 			copy(newPacket, packet)
@@ -138,47 +150,42 @@ func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
 		}
 
 		protocol = "udp"
-		port = int(zctcpip.UDPPacket(packet.Payload()).DestinationPort())
+		port = int(udpPacket.DestinationPort())
 	case zctcpip.ICMP:
+		if icmpPacket := zctcpip.ICMPPacket(packet.Payload()); !icmpPacket.Valid() {
+			return fmt.Errorf("invalid ICMP packet")
+		}
 		protocol = "icmp"
 	default:
 		return fmt.Errorf("protocol %d not supported, skip", packet.Protocol())
 	}
 
-	domain, resource, ok := s.ipPool.GetDomain(packet.DestinationIP())
+	domain, resourceSet, ok := s.ipPool.GetDomain(packet.DestinationIP())
 	if ok {
 		log.DebugPrintf("IP to domain %s", domain)
-
-		if resource.Protocol == protocol || resource.Protocol == "all" {
-			if protocol == "icmp" {
-				return s.processIPV4ICMP(packet, packet.Payload())
-			}
-
-			if resource.PortMin <= port && port <= resource.PortMax {
-				if protocol == "tcp" {
-					return s.processIPV4TCP(packet, packet.Payload())
-				} else {
+		for _, resource := range resourceSet {
+			if resource.Protocol == protocol || resource.Protocol == "all" {
+				if protocol == "icmp" {
+					return s.processIPV4ICMP(packet, packet.Payload())
+				}
+				if resource.PortMin <= port && port <= resource.PortMax {
+					if protocol == "tcp" {
+						return s.processIPV4TCP(packet, packet.Payload())
+					}
 					return s.processIPV4UDP(packet, packet.Payload())
 				}
 			}
 		}
 	}
 
-	for _, resource := range s.ipResources {
-		if bytes.Compare(packet.DestinationIP(), resource.IPMin) >= 0 && bytes.Compare(packet.DestinationIP(), resource.IPMax) <= 0 {
-			if resource.Protocol == protocol || resource.Protocol == "all" {
-				if protocol == "icmp" {
-					return s.processIPV4ICMP(packet, packet.Payload())
-				}
-
-				if resource.PortMin <= port && port <= resource.PortMax {
-					if protocol == "tcp" {
-						return s.processIPV4TCP(packet, packet.Payload())
-					} else {
-						return s.processIPV4UDP(packet, packet.Payload())
-					}
-				}
-			}
+	if _, ok := s.resourceIndex.Match(packet.DestinationIP(), protocol, port); ok {
+		switch protocol {
+		case "icmp":
+			return s.processIPV4ICMP(packet, packet.Payload())
+		case "tcp":
+			return s.processIPV4TCP(packet, packet.Payload())
+		default:
+			return s.processIPV4UDP(packet, packet.Payload())
 		}
 	}
 
@@ -193,7 +200,10 @@ func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPP
 	log.DebugPrintf("receive tcp %s:%d -> %s:%d", packet.SourceIP(), tcpPacket.SourcePort(), packet.DestinationIP(), tcpPacket.DestinationPort())
 
 	if !packet.DestinationIP().IsGlobalUnicast() {
-		return s.endpoint.Write(packet)
+		if err := s.endpoint.Write(packet); err != nil {
+			return fmt.Errorf("%w: write local TCP packet: %w", errTunnelIO, err)
+		}
+		return nil
 	}
 
 	if s.endpoint.client.CanUseTCPTunnel() {
@@ -201,6 +211,7 @@ func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPP
 			Payload: buffer.MakeWithData(packet),
 		})
 		s.tcpListenerEndpoint.dispatcher.DeliverNetworkPacket(ipv4.ProtocolNumber, pkt)
+		pkt.DecRef()
 		return nil
 	}
 
@@ -209,19 +220,22 @@ func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPP
 		if errors.Is(err, client.ErrResourceNotFound) {
 			return err
 		}
-		panic(err)
+		return fmt.Errorf("%w: write TCP packet: %w", errTunnelIO, err)
 	}
 	log.DebugPrintf("Send: wrote %d bytes", n)
 	log.DebugDumpHex(packet[:n])
 
-	return err
+	return nil
 }
 
 func (s *Stack) processIPV4UDP(packet zctcpip.IPv4Packet, udpPacket zctcpip.UDPPacket) error {
 	log.DebugPrintf("receive udp %s:%d -> %s:%d", packet.SourceIP(), udpPacket.SourcePort(), packet.DestinationIP(), udpPacket.DestinationPort())
 
 	if !packet.DestinationIP().IsGlobalUnicast() {
-		return s.endpoint.Write(packet)
+		if err := s.endpoint.Write(packet); err != nil {
+			return fmt.Errorf("%w: write local UDP packet: %w", errTunnelIO, err)
+		}
+		return nil
 	}
 
 	n, err := s.l3Conn.Write(packet)
@@ -229,12 +243,12 @@ func (s *Stack) processIPV4UDP(packet zctcpip.IPv4Packet, udpPacket zctcpip.UDPP
 		if errors.Is(err, client.ErrResourceNotFound) {
 			return err
 		}
-		panic(err)
+		return fmt.Errorf("%w: write UDP packet: %w", errTunnelIO, err)
 	}
 	log.DebugPrintf("Send: wrote %d bytes", n)
 	log.DebugDumpHex(packet[:n])
 
-	return err
+	return nil
 }
 
 func (s *Stack) processIPV4ICMP(packet zctcpip.IPv4Packet, icmpHeader zctcpip.ICMPPacket) error {
@@ -248,12 +262,12 @@ func (s *Stack) processIPV4ICMP(packet zctcpip.IPv4Packet, icmpHeader zctcpip.IC
 		if errors.Is(err, client.ErrResourceNotFound) {
 			return err
 		}
-		panic(err)
+		return fmt.Errorf("%w: write ICMP packet: %w", errTunnelIO, err)
 	}
 	log.DebugPrintf("Send: wrote %d bytes", n)
 	log.DebugDumpHex(packet[:n])
 
-	return err
+	return nil
 }
 
 // only can handle udp dns query!

@@ -56,7 +56,11 @@ func (p TCPPacket) ResetChecksum(psum uint32) {
 }
 
 func (p TCPPacket) Valid() bool {
-	return len(p) >= TCPHeaderSize
+	if len(p) < TCPHeaderSize {
+		return false
+	}
+	headerLen := int(p[12]>>4) * 4
+	return headerLen >= TCPHeaderSize && headerLen <= len(p)
 }
 
 func (p TCPPacket) Verify(sourceAddress net.IP, targetAddress net.IP) error {

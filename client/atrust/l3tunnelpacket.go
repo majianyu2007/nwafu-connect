@@ -1,9 +1,9 @@
 package atrust
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 
@@ -13,33 +13,38 @@ import (
 )
 
 func (t *L3Tunnel) processIPV4(packet zctcpip.IPv4Packet) error {
+	if !packet.Valid() {
+		return fmt.Errorf("invalid IPv4 packet")
+	}
 	protocol := ""
 	port := -1
 	switch packet.Protocol() {
 	case zctcpip.TCP:
+		tcpPacket := zctcpip.TCPPacket(packet.Payload())
+		if len(tcpPacket) < zctcpip.TCPHeaderSize || !tcpPacket.Valid() {
+			return fmt.Errorf("invalid TCP packet")
+		}
 		protocol = "tcp"
-		port = int(zctcpip.TCPPacket(packet.Payload()).DestinationPort())
+		port = int(tcpPacket.DestinationPort())
 	case zctcpip.UDP:
+		udpPacket := zctcpip.UDPPacket(packet.Payload())
+		if len(udpPacket) < zctcpip.UDPHeaderSize || !udpPacket.Valid() {
+			return fmt.Errorf("invalid UDP packet")
+		}
 		protocol = "udp"
-		port = int(zctcpip.UDPPacket(packet.Payload()).DestinationPort())
+		port = int(udpPacket.DestinationPort())
 	case zctcpip.ICMP:
+		if icmpPacket := zctcpip.ICMPPacket(packet.Payload()); !icmpPacket.Valid() {
+			return fmt.Errorf("invalid ICMP packet")
+		}
 		protocol = "icmp"
 	default:
 		return fmt.Errorf("protocol %d: %w", packet.Protocol(), client.ErrResourceNotFound)
 	}
 
-	for _, resource := range t.ipResources {
-		if bytes.Compare(packet.DestinationIP(), resource.IPMin) >= 0 && bytes.Compare(packet.DestinationIP(), resource.IPMax) <= 0 {
-			if resource.Protocol == protocol || resource.Protocol == "all" {
-				if protocol == "icmp" {
-					return t.writePacket(packet, resource.AppID, resource.NodeGroupID)
-				}
-
-				if resource.PortMin <= port && port <= resource.PortMax {
-					return t.writePacket(packet, resource.AppID, resource.NodeGroupID)
-				}
-			}
-		}
+	resource, ok := t.resourceIndex.Match(packet.DestinationIP(), protocol, port)
+	if ok {
+		return t.writePacket(packet, resource.AppID, resource.NodeGroupID)
 	}
 
 	if port != -1 {
@@ -97,7 +102,11 @@ func isClosedConnErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, net.ErrClosed) {
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
 		return true
 	}
 	return strings.Contains(err.Error(), "use of closed network connection")
@@ -144,6 +153,9 @@ func buildPacketMeta(packet zctcpip.IPv4Packet) (packetMeta, error) {
 }
 
 func logPacket(direction string, packet []byte) {
+	if !log.DebugEnabled() {
+		return
+	}
 	if len(packet) == 0 {
 		log.DebugPrintf("l3-tunnel %s packet len=0", direction)
 		return

@@ -79,6 +79,9 @@ type (
 		BrowserMode             *bool                      `toml:"browser_mode"`
 		BrowserPath             *string                    `toml:"browser_path"`
 		BrowserURL              *string                    `toml:"browser_url"`
+		BrowserProfileDir       *string                    `toml:"browser_profile_dir"`
+		BrowserStayRunning      *bool                      `toml:"browser_stay_running"`
+		BrowserStateFile        *string                    `toml:"browser_state_file"`
 		ShadowsocksURL          *string                    `toml:"shadowsocks_url"`
 		DialDirectProxy         *string                    `toml:"dial_direct_proxy"`
 		TCPTunnelMode           *bool                      `toml:"tcp_tunnel_mode"`

@@ -38,6 +38,9 @@ func proxyStream(proxyAddress, targetAddress string, input io.Reader, output io.
 		return fmt.Errorf("connect to NWAFU Connect: %w", err)
 	}
 	defer connection.Close()
+	if err := connection.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("set proxy handshake deadline: %w", err)
+	}
 	if _, err := fmt.Fprintf(connection, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddress, targetAddress); err != nil {
 		return fmt.Errorf("send CONNECT request: %w", err)
 	}
@@ -48,6 +51,9 @@ func proxyStream(proxyAddress, targetAddress string, input io.Reader, output io.
 	}
 	if statusCode != 200 {
 		return fmt.Errorf("NWAFU Connect rejected target: %s", status)
+	}
+	if err := connection.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear proxy handshake deadline: %w", err)
 	}
 	writeDone := make(chan error, 1)
 	go func() {

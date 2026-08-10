@@ -45,7 +45,8 @@ func ExecTerminalFunc(ctx context.Context) []error {
 	terminalMu.Unlock()
 
 	var errList []error
-	for _, item := range funcList {
+	for index := len(funcList) - 1; index >= 0; index-- {
+		item := funcList[index]
 		log.Println("Exec func on terminal:", item.name)
 		if err := item.f(ctx); err != nil {
 			errList = append(errList, err)

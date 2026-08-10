@@ -14,6 +14,23 @@ import (
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
+
+func readAuthHTTPResponse(response *http.Response, operation string, limit int64) ([]byte, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("%s response limit must be positive", operation)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", operation, err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("%s response exceeds %d bytes", operation, limit)
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("%s returned HTTP status %d", operation, response.StatusCode)
+	}
+	return body, nil
+}
 func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	log.Println("Perform GET /passport/v1/public/authConfig")
 
@@ -26,7 +43,10 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	}
 
 	u := s.baseURL + "/passport/v1/public/authConfig"
-	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	req, err := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("create auth config request: %w", err)
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-rid", s.rid)
@@ -40,11 +60,16 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "auth config", 8<<20)
+	if err != nil {
+		return 0, nil, err
+	}
 	log.DebugPrintf("Received auth config: %s", string(body))
 
 	var re struct {
-		Data struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
 			AuthServerInfoList []AuthInfo `json:"authServerInfoList"`
 			IsLogin            int        `json:"isLogin"`
 			CSRF               string     `json:"csrfToken"`
@@ -56,9 +81,11 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 			AntiReplayRand string `json:"antiReplayRand"`
 		} `json:"data"`
 	}
-	err = json.Unmarshal(body, &re)
-	if err != nil {
-		return 0, nil, err
+	if err := json.Unmarshal(body, &re); err != nil {
+		return 0, nil, fmt.Errorf("decode auth config response: %w", err)
+	}
+	if re.Code != 0 {
+		return 0, nil, fmt.Errorf("auth config failed with code %d: %s", re.Code, re.Message)
 	}
 	log.DebugPrintf("Parsed auth config: %+v", re)
 
@@ -109,7 +136,10 @@ func (s *Session) reportEnv() error {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ = io.ReadAll(resp.Body)
+	body, err = readAuthHTTPResponse(resp, "report environment", 8<<20)
+	if err != nil {
+		return err
+	}
 	log.DebugPrintf("Received report env: %s", string(body))
 
 	var re struct {
@@ -123,7 +153,8 @@ func (s *Session) reportEnv() error {
 	log.DebugPrintf("Parsed report env: %+v", re)
 
 	if re.Code != 0 {
-		log.Printf("reportEnv failed with code %d: %s", re.Code, string(body))
+		log.Printf("reportEnv failed with code %d", re.Code)
+		log.DebugPrintf("reportEnv failure response: %s", string(body))
 		return fmt.Errorf("reportEnv failed with code %d", re.Code)
 	}
 
@@ -228,7 +259,10 @@ func (s *Session) authCheck() (authStep, error) {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "authentication check", 8<<20)
+	if err != nil {
+		return authStep{}, err
+	}
 	log.DebugPrintf("Received auth check: %s", string(body))
 
 	var ac struct {
@@ -269,7 +303,10 @@ func (s *Session) phoneNumber(authID string) ([]string, error) {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "registered phone number", 8<<20)
+	if err != nil {
+		return nil, err
+	}
 
 	var re struct {
 		Code    int    `json:"code"`
@@ -351,7 +388,10 @@ func (s *Session) authSms(step authStep) error {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "secondary SMS send", 8<<20)
+	if err != nil {
+		return err
+	}
 	log.DebugPrintf("Received send sms: %s", string(body))
 
 	var re struct {
@@ -380,10 +420,11 @@ func (s *Session) authSms(step authStep) error {
 func (s *Session) smsCheckCode(step authStep) (authStep, error) {
 	log.Println("Perform POST /passport/v1/auth/sms")
 
-	code := ""
-	log.Println("Tips: Add prefix '$' to sms code to skip secondary authentication")
-	log.Print("Please enter the SMS verification code: ")
-	_, err := fmt.Scanln(&code)
+	code, err := readVerificationCode(
+		"输入短信验证码",
+		"请输入学校网关发送到已登记手机的验证码。",
+		true,
+	)
 	if err != nil {
 		return authStep{}, err
 	}
@@ -440,7 +481,10 @@ func (s *Session) secondarySMSCheckCodeImpl(step authStep, code string, skipSeco
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "secondary SMS verification", 8<<20)
+	if err != nil {
+		return authStep{}, err
+	}
 	log.DebugPrintf("Received sms check: %s", string(body))
 
 	var re struct {
@@ -455,7 +499,8 @@ func (s *Session) secondarySMSCheckCodeImpl(step authStep, code string, skipSeco
 	log.DebugPrintf("Parsed sms check: %+v", re)
 
 	if re.Code != 0 {
-		log.Printf("smsCheckCode failed with code %d: %s", re.Code, string(body))
+		log.Printf("smsCheckCode failed with code %d: %s", re.Code, re.Message)
+		log.DebugPrintf("smsCheckCode failure response: %s", string(body))
 		return authStep{}, fmt.Errorf("smsCheckCode failed with code %d: %s", re.Code, re.Message)
 	}
 
@@ -478,7 +523,10 @@ func (s *Session) onlineInfo() (string, error) {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "online information", 8<<20)
+	if err != nil {
+		return "", err
+	}
 	log.DebugPrintf("Received online info: %s", string(body))
 
 	var re struct {
@@ -495,7 +543,8 @@ func (s *Session) onlineInfo() (string, error) {
 	log.DebugPrintf("Parsed online info: %+v", re)
 
 	if re.Code != 0 {
-		log.Printf("onlineInfo failed with code %d: %s", re.Code, string(body))
+		log.Printf("onlineInfo failed with code %d", re.Code)
+		log.DebugPrintf("onlineInfo failure response: %s", string(body))
 		return "", fmt.Errorf("onlineInfo failed with code %d", re.Code)
 	}
 
@@ -531,7 +580,10 @@ func (s *Session) ClientResource() ([]byte, error) {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "client resources", 32<<20)
+	if err != nil {
+		return nil, err
+	}
 	log.DebugPrintf("Received client resource: %s", string(body))
 
 	return body, nil
@@ -555,7 +607,10 @@ func (s *Session) checkCode() ([]byte, error) {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "captcha image", 16<<20)
+	if err != nil {
+		return nil, err
+	}
 	log.DebugPrintf("Received check code image: %d bytes", len(body))
 
 	return body, nil

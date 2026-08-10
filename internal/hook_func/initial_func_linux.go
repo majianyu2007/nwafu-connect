@@ -2,6 +2,7 @@ package hook_func
 
 import (
 	"context"
+	"fmt"
 	"os/user"
 
 	"github.com/majianyu2007/nwafu-connect/configs"
@@ -10,14 +11,15 @@ import (
 
 func init() {
 	RegisterInitialFunc("check tun mode cap", func(ctx context.Context, config configs.Config) error {
-		// discard error
-		if config.TUNMode {
-			current, _ := user.Current()
+		if config.TUNMode && !config.BrowserMode {
+			current, err := user.Current()
+			if err != nil {
+				return fmt.Errorf("identify current user: %w", err)
+			}
 			if current.Uid != "0" {
 				log.Println("TUN mode detected, but the current user is not root. This may cause issues. If you encounter problems, please run the application using sudo.")
 			}
 		}
 		return nil
 	})
-	//RegisterInitialFunc("check bind port", checkBindPortLegal) // TODO: figure out whether to check port or not
 }

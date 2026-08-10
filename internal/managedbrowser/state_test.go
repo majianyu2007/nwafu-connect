@@ -31,3 +31,22 @@ func TestStateRoundTripUsesPrivateFile(t *testing.T) {
 		t.Fatalf("browser state still exists: %v", err)
 	}
 }
+
+func TestWriteStateReplacesExistingState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "browser-state.json")
+	first := State{ProxyAddress: "127.0.0.1:41000", StartURL: "http://127.0.0.1:42000/", Executable: "/first"}
+	second := State{ProxyAddress: "127.0.0.1:43000", StartURL: "http://127.0.0.1:44000/", Executable: "/second"}
+	if err := WriteState(path, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteState(path, second); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != second {
+		t.Fatalf("replaced state = %#v, want %#v", got, second)
+	}
+}

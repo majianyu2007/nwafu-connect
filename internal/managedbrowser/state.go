@@ -43,10 +43,25 @@ func WriteState(path string, state State) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close browser state file: %w", err)
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := replaceStateFile(temporaryPath, path); err != nil {
 		return fmt.Errorf("publish browser state file: %w", err)
 	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("protect published browser state file: %w", err)
+	}
 	return nil
+}
+
+func replaceStateFile(source, destination string) error {
+	if err := os.Rename(source, destination); err == nil {
+		return nil
+	} else if _, statErr := os.Stat(destination); statErr != nil {
+		return err
+	}
+	if err := os.Remove(destination); err != nil {
+		return err
+	}
+	return os.Rename(source, destination)
 }
 
 func ReadState(path string) (State, error) {

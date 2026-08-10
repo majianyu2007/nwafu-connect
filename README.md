@@ -111,8 +111,8 @@ Enterprise WeChat QR code scanned; waiting for confirmation
 Perform GET /passport/v1/auth/qywechat
 Perform GET /passport/v1/auth/authCheck
 VPN client started
-HTTP server listening on :1081
-SOCKS5 server listening on :1080
+HTTP server listening on 127.0.0.1:1081
+SOCKS5 server listening on 127.0.0.1:1080
 ```
 
 ## 受管浏览器模式

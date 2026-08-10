@@ -1,12 +1,13 @@
 package dial
 
 import (
-	"bytes"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
 
 	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/internal/ipresource"
 	"github.com/majianyu2007/nwafu-connect/log"
 	"github.com/majianyu2007/nwafu-connect/resolve"
 	"github.com/majianyu2007/nwafu-connect/stack"
@@ -21,10 +22,15 @@ import (
 // outside the resources authorized by the aTrust gateway.
 var ErrACLDenied = errors.New("destination not in aTrust resources")
 
+func aclDenied(network, address string) error {
+	log.Printf("ACL: refusing %s/%s because it is not authorized by the aTrust gateway", address, network)
+	return fmt.Errorf("%w: %s/%s", ErrACLDenied, address, network)
+}
+
 type Dialer struct {
 	stack                stack.Stack
 	resolver             *resolve.Resolver
-	ipResources          []client.IPResource
+	resourceIndex        *ipresource.Index
 	alwaysUseVPN         bool
 	dialDirectHTTPProxy  string // format: "ip:port"
 	dialDirectSocksProxy string // WORKING IN PROCESS
@@ -64,128 +70,99 @@ func (d *Dialer) dialDirectHost(ctx context.Context, network, hostAddr string) (
 }
 
 func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Conn, error) {
+	ipString, portString, err := net.SplitHostPort(ipAddr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %q: %w", ipAddr, err)
+	}
+	ip := net.ParseIP(ipString)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid IP address %q", ipString)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil || port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid port in address %q", ipAddr)
+	}
+
 	hostAddr := ""
-	if _, hostAddrOK := ctx.Value(resolve.ContextKeyResolveHost).(string); hostAddrOK {
-		// hostAddr doesn't have port field at now
-		hostAddr = ctx.Value(resolve.ContextKeyResolveHost).(string)
+	if resolvedHost, ok := ctx.Value(resolve.ContextKeyResolveHost).(string); ok && resolvedHost != "" {
+		hostAddr = net.JoinHostPort(resolvedHost, portString)
 	}
-	parts := strings.Split(ipAddr, ":")
-	if len(parts) >= 2 {
-		// maybe need extra check for parts[len(parts)-1] is port or not?
-		hostAddr += ":" + parts[len(parts)-1]
-	}
-
-	// If addr is IPv6, use direct connection
-	if len(parts) > 2 {
+	if ip.To4() == nil {
+		if d.alwaysUseVPN {
+			return nil, aclDenied(network, ipAddr)
+		}
 		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 	}
 
-	ip, portStr, err := net.SplitHostPort(ipAddr)
-	if err != nil {
-		return nil, errors.New("Invalid address: " + ipAddr)
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return nil, errors.New("Invalid port in address: " + ipAddr)
-	}
-
-	var useVPN = false
-	var target *net.IPAddr
-
-	if pureIp := net.ParseIP(ip); pureIp != nil {
-		target = &net.IPAddr{IP: pureIp}
-	} else {
-		log.Printf("Illegal situation, host is not pure IP format: %s", ip)
-		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
-	}
-	if d.alwaysUseVPN {
-		useVPN = true
+	resourceNetwork := network
+	switch {
+	case strings.HasPrefix(network, "tcp"):
+		resourceNetwork = "tcp"
+	case strings.HasPrefix(network, "udp"):
+		resourceNetwork = "udp"
 	}
 
 	matchedResource := false
 	if res := ctx.Value(resolve.ContextKeyDomainResource); res != nil {
-		resource := res.(client.DomainResource)
-		if resource.PortMin <= port && port <= resource.PortMax {
-			if resource.Protocol == network || resource.Protocol == "all" {
-				useVPN = true
-				matchedResource = true
-			}
+		if resources, ok := res.(client.DomainResourceSet); ok {
+			_, matchedResource = resources.Match(port, resourceNetwork)
 		}
 	}
-
-	if !matchedResource && d.ipResources != nil {
-		for _, resource := range d.ipResources {
-			if bytes.Compare(target.IP, resource.IPMin) >= 0 && bytes.Compare(target.IP, resource.IPMax) <= 0 {
-				if resource.PortMin <= port && port <= resource.PortMax {
-					if resource.Protocol == network || resource.Protocol == "all" {
-						useVPN = true
-						matchedResource = true
-						break
-					}
-				}
-			}
-		}
+	if !matchedResource {
+		_, matchedResource = d.resourceIndex.Match(ip, resourceNetwork, port)
 	}
 
-	if useVPN && !matchedResource {
-		// The browser proxy runs in always-VPN mode to keep campus traffic on
-		// the aTrust tunnel. Destinations the gateway did not authorize (CDNs,
-		// analytics, fonts, etc.) are reached directly instead of being blocked,
-		// so campus pages can still load external assets without leaking the
-		// VPN session to unauthorized destinations.
-		log.Printf("ACL: %s/%s not in aTrust resources; using direct connection", ipAddr, network)
+	if d.alwaysUseVPN && !matchedResource {
+		return nil, aclDenied(network, ipAddr)
+	}
+	if !matchedResource {
 		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 	}
 
-	if useVPN {
-		if network == "tcp" {
-			log.Printf("%s -> VPN", ipAddr)
-
-			return d.stack.DialTCP(ctx, &net.TCPAddr{
-				IP:   target.IP,
-				Port: port,
-			})
-		} else if network == "udp" {
-			log.Printf("%s -> VPN", ipAddr)
-
-			return d.stack.DialUDP(ctx, &net.UDPAddr{
-				IP:   target.IP,
-				Port: port,
-			})
-		} else {
-			log.Printf("VPN only support TCP/UDP. Connection to %s will use direct connection", ipAddr)
-			return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
+	target := &net.IPAddr{IP: ip}
+	switch resourceNetwork {
+	case "tcp":
+		log.Printf("%s -> VPN", ipAddr)
+		return d.stack.DialTCP(ctx, &net.TCPAddr{IP: target.IP, Port: port})
+	case "udp":
+		log.Printf("%s -> VPN", ipAddr)
+		return d.stack.DialUDP(ctx, &net.UDPAddr{IP: target.IP, Port: port})
+	default:
+		if d.alwaysUseVPN {
+			return nil, fmt.Errorf("VPN does not support network %q", network)
 		}
-	} else {
+		log.Printf("VPN does not support %s; using direct connection for %s", network, ipAddr)
 		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 	}
 }
 
 func (d *Dialer) Dial(ctx context.Context, network string, addr string) (net.Conn, error) {
-	// If addr is IPv6, use direct connection
-	if strings.Count(addr, ":") > 1 {
-		return d.dialDirectIP(ctx, network, addr, "")
-	}
-
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
+		if d.alwaysUseVPN {
+			return nil, fmt.Errorf("invalid managed-browser destination %q: %w", addr, err)
+		}
 		return d.dialDirectHost(ctx, network, addr)
 	}
 
-	var ip net.IP
-	if ip = net.ParseIP(host); ip == nil {
-		ctx, ip, err = d.resolver.Resolve(ctx, host)
-		if err != nil {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		if d.resolver == nil {
+			if d.alwaysUseVPN {
+				return nil, aclDenied(network, addr)
+			}
 			return d.dialDirectHost(ctx, network, addr)
 		}
-
-		if strings.Count(ip.String(), ":") > 0 {
-			return d.dialDirectIP(ctx, network, ip.String()+":"+port, addr)
+		ctx, ip, err = d.resolver.Resolve(ctx, host)
+		if err != nil {
+			if d.alwaysUseVPN {
+				return nil, fmt.Errorf("resolve managed-browser destination %q: %w", host, err)
+			}
+			return d.dialDirectHost(ctx, network, addr)
 		}
 	}
 
-	return d.DialIPPort(ctx, network, ip.String()+":"+port)
+	return d.DialIPPort(ctx, network, net.JoinHostPort(ip.String(), port))
 }
 
 func NewDialer(stack stack.Stack, resolver *resolve.Resolver, ipResources []client.IPResource, alwaysUseVPN bool, dialDirectProxy string) *Dialer {
@@ -201,7 +178,7 @@ func NewDialer(stack stack.Stack, resolver *resolve.Resolver, ipResources []clie
 	return &Dialer{
 		stack:                stack,
 		resolver:             resolver,
-		ipResources:          ipResources,
+		resourceIndex:        ipresource.New(ipResources),
 		alwaysUseVPN:         alwaysUseVPN,
 		dialDirectHTTPProxy:  dialHttpProxy,
 		dialDirectSocksProxy: dialSocksProxy,
