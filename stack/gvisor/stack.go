@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+ "net"
+ "sync"
 
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
@@ -20,6 +22,8 @@ import (
 )
 
 type Stack struct {
+ ipMu sync.Mutex
+ ip tcpip.Address
 	gvisorStack *stack.Stack
 	resolve     zcdns.LocalServer
 	ipPool      *ippool.IPPool[client.DomainResourceSet]
@@ -120,7 +124,7 @@ func (ep *Endpoint) WritePackets(list stack.PacketBufferList) (int, tcpip.Error)
 	return written, nil
 }
 
-func NewStack(client client.Client) (*Stack, error) {
+func NewStack(vpnClient client.Client) (*Stack, error) {
 	s := &Stack{}
 
 	s.gvisorStack = stack.New(stack.Options{
@@ -140,7 +144,7 @@ func NewStack(client client.Client) (*Stack, error) {
 		}
 	}()
 	s.endpoint = &Endpoint{
-		client: client,
+		client: vpnClient,
 		l3Conn: l3Conn,
 		failed: make(chan error, 1),
 	}
@@ -150,12 +154,13 @@ func NewStack(client client.Client) (*Stack, error) {
 		return nil, errors.New(tcpipErr.String())
 	}
 
-	ip, err := client.IP()
+	ip, err := vpnClient.IP()
 	if err != nil {
 		return nil, err
 	}
 
 	addr := tcpip.AddrFromSlice(ip)
+ s.ip = addr
 	protoAddr := tcpip.ProtocolAddress{
 		AddressWithPrefix: tcpip.AddressWithPrefix{
 			Address:   addr,
@@ -176,6 +181,7 @@ func NewStack(client client.Client) (*Stack, error) {
 	s.gvisorStack.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, NIC: NICID})
 
 	stackReady = true
+	client.RegisterIPUpdateHandler(vpnClient, s.updateIP)
 	return s, nil
 }
 
@@ -221,4 +227,30 @@ func (s *Stack) Run() error {
 	case err := <-readDone:
 		return err
 	}
+}
+
+func (s *Stack) updateIP(ip net.IP) error {
+	ip = ip.To4()
+	if ip == nil {
+		return errors.New("virtual IP update is not IPv4")
+	}
+	newAddr := tcpip.AddrFromSlice(ip)
+	s.ipMu.Lock()
+	defer s.ipMu.Unlock()
+	if newAddr == s.ip {
+		return nil
+	}
+	protoAddr := tcpip.ProtocolAddress{
+		AddressWithPrefix: tcpip.AddressWithPrefix{Address: newAddr, PrefixLen: 32},
+		Protocol:          ipv4.ProtocolNumber,
+	}
+	if err := s.gvisorStack.AddProtocolAddress(NICID, protoAddr, stack.AddressProperties{}); err != nil {
+		return errors.New(err.String())
+	}
+	if err := s.gvisorStack.RemoveAddress(NICID, s.ip); err != nil {
+		_ = s.gvisorStack.RemoveAddress(NICID, newAddr)
+		return errors.New(err.String())
+	}
+	s.ip = newAddr
+	return nil
 }

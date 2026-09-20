@@ -22,6 +22,8 @@ type ClientResource struct {
 					Apps []struct {
 						ID          string
 						NodeGroupID string
+ EnableTCPPrefL3 bool
+ AddrPretend bool
 						Name        string
 						Description string
 						AddressList []struct {
@@ -127,7 +129,7 @@ func (c *Client) parseResource(resource []byte) error {
 	ipSetBuilder := netaddr.IPSetBuilder{}
 	c.ipResources = make([]client.IPResource, 0)
 	c.domainResources = make(map[string]client.DomainResourceSet)
-	c.dnsResource = make(map[string]net.IP)
+	c.dnsResource = make(map[string][]net.IP)
 	c.resources = make([]client.Resource, 0)
 
 	for _, app := range clientResource.Data.AppList.Data.AppInfo {
@@ -211,6 +213,7 @@ func (c *Client) parseResource(resource []byte) error {
 						Protocol:    protocol,
 						AppID:       appItem.ID,
 						NodeGroupID: appItem.NodeGroupID,
+ EnableTCPPrefL3: appItem.EnableTCPPrefL3,
 					})
 					log.DebugPrintf("Add IP: %s, Port range: %d ~ %d, [%s]", hostIP, portMin, portMax, protocol)
 				case cidrErr == nil:
@@ -228,6 +231,7 @@ func (c *Client) parseResource(resource []byte) error {
 						Protocol:    protocol,
 						AppID:       appItem.ID,
 						NodeGroupID: appItem.NodeGroupID,
+ EnableTCPPrefL3: appItem.EnableTCPPrefL3,
 					})
 					log.DebugPrintf("Add CIDR: %s (%s ~ %s), Port range: %d ~ %d, [%s]", hostStr, ip4, ipMax4, portMin, portMax, protocol)
 				case isRange:
@@ -240,6 +244,7 @@ func (c *Client) parseResource(resource []byte) error {
 						Protocol:    protocol,
 						AppID:       appItem.ID,
 						NodeGroupID: appItem.NodeGroupID,
+ EnableTCPPrefL3: appItem.EnableTCPPrefL3,
 					})
 					log.DebugPrintf("Add IP range: %s ~ %s, Port range: %d ~ %d, [%s]", rangeMin, rangeMax, portMin, portMax, protocol)
 				default:
@@ -249,6 +254,8 @@ func (c *Client) parseResource(resource []byte) error {
 						Protocol:    protocol,
 						AppID:       appItem.ID,
 						NodeGroupID: appItem.NodeGroupID,
+ EnableTCPPrefL3: appItem.EnableTCPPrefL3,
+ AddrPretend: appItem.AddrPretend,
 					})
 					log.DebugPrintf("Add domain: %s, Port range: %d ~ %d, [%s]", hostStr, portMin, portMax, protocol)
 				}
@@ -286,9 +293,10 @@ func (c *Client) parseResource(resource []byte) error {
 							Protocol:    protocol,
 							AppID:       appItem.ID,
 							NodeGroupID: appItem.NodeGroupID,
+ EnableTCPPrefL3: appItem.EnableTCPPrefL3,
 						})
-						if _, exists := c.dnsResource[domainKey]; !exists {
-							c.dnsResource[domainKey] = append(net.IP(nil), ip4...)
+						{
+							c.dnsResource[domainKey] = append(c.dnsResource[domainKey], append(net.IP(nil), ip4...))
 						}
 						log.DebugPrintf("Add DNS rule: %s -> %s", hostStr, ip4)
 					}
@@ -310,17 +318,21 @@ func (c *Client) parseResource(resource []byte) error {
 		log.DebugPrintf("No DNS server found")
 	}
 
+	c.dnsServers = nil
+ for _, server := range []string{clientResource.Data.SDPPolicy.Data.ClientOption.DNSOption.FirstDNS, clientResource.Data.SDPPolicy.Data.ClientOption.DNSOption.SecondDNS, clientResource.Data.SDPPolicy.Data.ClientOption.DNSOptionV2.FirstDNS, clientResource.Data.SDPPolicy.Data.ClientOption.DNSOptionV2.SecondDNS} {
+  if server != "" { found := false; for _, existing := range c.dnsServers { if existing == server { found = true } }; if !found { c.dnsServers = append(c.dnsServers, server) } }
+ }
 	c.MajorNodeGroup = clientResource.Data.AppList.Data.Config.NodeGroupConf.MajorNodeGroup.ID
-	c.NodeGroups = make(map[string][]string)
+	c.NodeGroups = make(map[string]NodeGroup)
 	for _, nodeGroup := range clientResource.Data.AppList.Data.Config.NodeGroupConf.NodeGroupList {
-		addressList := make([]string, 0)
+		addressList := NodeGroup{}
 		for _, addressInfo := range nodeGroup.AddressInfo {
 			address, ok := normalizeNodeAddress(addressInfo.Address, c.serverAddress)
 			if !ok {
 				log.Printf("Ignore invalid node address in group %s: %q", nodeGroup.ID, addressInfo.Address)
 				continue
 			}
-			addressList = append(addressList, address)
+			if addressInfo.Type == "lan" { addressList.LAN = append(addressList.LAN, address) } else { addressList.WAN = append(addressList.WAN, address) }
 
 			// Remove ip from ipSetBuilder to prevent circular routing
 			host, _, err := net.SplitHostPort(address)

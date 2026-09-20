@@ -4,13 +4,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	mathrand "math/rand"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
+	"crypto/tls"
 	"time"
 
+	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
@@ -50,13 +53,46 @@ type Cookie struct {
 }
 
 type ClientAuthData struct {
-	Cookies  []Cookie `json:"cookies"`
-	DeviceID string   `json:"device_id"`
+	Cookies           []Cookie        `json:"cookies"`
+	DeviceID          string          `json:"device_id"`
+	ServerVersionInfo json.RawMessage `json:"server_version_info,omitempty"`
+}
+
+type ServerVersionInfo struct {
+	Code int `json:"code"`
+	Data struct {
+		Capacities struct {
+			ZeroRTT struct {
+				Version string `json:"version"`
+			} `json:"zeroRTT"`
+		} `json:"capacities"`
+		Options struct {
+			Tun0RTT struct {
+				Enable bool `json:"enable"`
+			} `json:"tun0rtt"`
+		} `json:"options"`
+	} `json:"data"`
+}
+
+func ParseServerVersionInfo(data []byte) (ServerVersionInfo, error) {
+	var info ServerVersionInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return info, fmt.Errorf("failed to parse aTrust server manifest: %w", err)
+	}
+	if info.Code != 0 {
+		return info, fmt.Errorf("aTrust server manifest failed with code %d", info.Code)
+	}
+	return info, nil
+}
+
+func (i ServerVersionInfo) TCPTunnelZeroRTT() bool {
+	return i.Data.Capacities.ZeroRTT.Version != "" && i.Data.Options.Tun0RTT.Enable
 }
 
 type Session struct {
 	client     *http.Client
 	deviceID   string
+	username   string
 	totpSecret string
 
 	baseHost string
@@ -69,22 +105,28 @@ type Session struct {
 	pubKeyExp      string
 	antiReplayRand string
 	ticket         string
+	nextService    string
 
-	response map[string]json.RawMessage
+	response         map[string]json.RawMessage
+	challengeHandler authchallenge.Handler
 }
 
-func NewSession(server string) *Session {
+func NewSession(server string, tlsKeyLogWriter io.Writer, dialContext ...client.DialContextFunc) *Session {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{KeyLogWriter: tlsKeyLogWriter}
+	if len(dialContext) > 0 && dialContext[0] != nil {
+		transport.DialContext = dialContext[0]
+	}
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Transport: transport, Jar: jar, Timeout: 20 * time.Second}
 
-	rid := base64.StdEncoding.EncodeToString([]byte(server))
 	return &Session{
 		client:   client,
 		baseHost: server,
 		baseURL:  "https://" + server,
-		rid:      rid,
+		rid:      base64.StdEncoding.EncodeToString([]byte(server)),
 		response: make(map[string]json.RawMessage),
+		challengeHandler: newCampusChallengeHandler(),
 	}
 }
 
@@ -105,9 +147,10 @@ type QYWechatQrcodeConfig struct {
 }
 
 type LoginOptions struct {
-	DeviceID   string
-	Cookies    []Cookie
-	TOTPSecret string
+	DeviceID         string
+	Cookies          []Cookie
+	TOTPSecret       string
+	ChallengeHandler authchallenge.Handler
 }
 
 type LoginResult struct {
@@ -155,27 +198,17 @@ func (s *Session) withGraphCheckCode(process func(string) (int, error), graphCod
 			return err
 		}
 
-		var graphCheckCode string
-		if graphCodeFile != "" {
-			if writeErr := os.WriteFile(graphCodeFile, imgData, 0600); writeErr != nil {
-				return fmt.Errorf("write graph check code image %q: %w", graphCodeFile, writeErr)
-			} else {
-				if chmodErr := os.Chmod(graphCodeFile, 0600); chmodErr != nil {
-					return fmt.Errorf("secure graph check code image: %w", chmodErr)
-				}
-				log.Printf("Graph check code saved to %s", graphCodeFile)
-			}
-
-			log.Print("Please enter the graph check code JSON: ")
-			_, err = fmt.Scanln(&graphCheckCode)
-			if err != nil {
-				return err
-			}
-		} else {
-			graphCheckCode, err = serveCaptchaInBrowser(imgData, 5*time.Minute)
-			if err != nil {
-				return fmt.Errorf("failed to get captcha input: %w", err)
-			}
+		captchaResponse, err := s.challengeHandler.HandleClickCaptcha(authchallenge.ClickCaptchaChallenge{
+			Image:      imgData,
+			OutputPath: graphCodeFile,
+			Message:    "Please enter the graph check code JSON:",
+		})
+		if err != nil {
+			return fmt.Errorf("complete aTrust captcha challenge: %w", err)
+		}
+		graphCheckCode, err := graphCheckCodeFromResponse(captchaResponse, imgData)
+		if err != nil {
+			return fmt.Errorf("encode aTrust captcha response: %w", err)
 		}
 
 		log.DebugPrintf("graphCheckCode submitted: %s", graphCheckCode)
@@ -219,6 +252,18 @@ func (s *Session) continueAuth(step authStep) error {
 			step, err = s.completeCustomSMS()
 		case "auth/totp":
 			step, err = s.completeTOTP(step)
+		case "auth/radius":
+			step, err = s.completeRadius("auth/token")
+		case "auth/challenge":
+			step, err = s.completeRadius("auth/challenge")
+		case "auth/accessCheck":
+			step, err = s.accessCheck()
+		case "auth/preEnhancedAuth", "auth/enhancedConfirm", "auth/enhancedDone":
+			step, err = s.completeEnhancedAuth(step)
+		case "auth/bindAuthDevice":
+			step, err = s.bindAuthDevice(step)
+		case "auth/token":
+			return fmt.Errorf("token authentication type is missing")
 		default:
 			return fmt.Errorf("unsupported next authentication service: %s", step.Service)
 		}
@@ -293,6 +338,10 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 
 	s.deviceID = opts.DeviceID
 	s.totpSecret = opts.TOTPSecret
+	s.challengeHandler = opts.ChallengeHandler
+	if s.challengeHandler == nil {
+		s.challengeHandler = newCampusChallengeHandler()
+	}
 	deviceEnvironment, err := json.Marshal(struct {
 		DeviceID string `json:"deviceId"`
 	}{DeviceID: opts.DeviceID})
@@ -340,7 +389,11 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 		return LoginResult{}, err
 	}
 
-	err = s.continueAuth(authStep{Service: "auth/authCheck"})
+	nextService := s.nextService
+	if nextService == "" {
+		nextService = "auth/authCheck"
+	}
+	err = s.continueAuth(authStep{Service: nextService})
 	if err != nil {
 		return LoginResult{}, err
 	}

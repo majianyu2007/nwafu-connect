@@ -5,37 +5,55 @@ import (
 	"errors"
 	"io"
 	"net"
-	"strings"
 
 	"inet.af/netaddr"
 )
 
 var ErrResourceNotFound = errors.New("resource not found")
 
+type DialContextFunc func(context.Context, string, string) (net.Conn, error)
+
+// UnderlayDialer provides network connections used to reach the VPN server.
+// Implementations must be safe for concurrent use. The caller owns the
+// dialer lifecycle; clients do not close it.
+type UnderlayDialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+	ExcludeIP(ip net.IP)
+}
+
 type IPResource struct {
-	IPMin       net.IP
-	IPMax       net.IP
-	PortMin     int
-	PortMax     int
-	Protocol    string
-	AppID       string
-	NodeGroupID string
+	IPMin           net.IP
+	IPMax           net.IP
+	PortMin         int
+	PortMax         int
+	Protocol        string
+	AppID           string
+	NodeGroupID     string
+	EnableTCPPrefL3 bool
 }
 
 type DomainResource struct {
-	PortMin     int
-	PortMax     int
-	Protocol    string
-	AppID       string
-	NodeGroupID string
+	PortMin         int
+	PortMax         int
+	Protocol        string
+	AppID           string
+	NodeGroupID     string
+	EnableTCPPrefL3 bool
+	AddrPretend     bool
 }
 
-type DomainResourceSet []DomainResource
+type DomainResourceSet = []DomainResource
+type DomainResources = map[string][]DomainResource
 
-func (resources DomainResourceSet) Match(port int, protocol string) (DomainResource, bool) {
+func MatchDomainResource(resources []DomainResource, network string, port int) (DomainResource, bool) {
+	return MatchDomainResourceWhere(resources, network, port, nil)
+}
+
+func MatchDomainResourceWhere(resources []DomainResource, network string, port int, accept func(DomainResource) bool) (DomainResource, bool) {
 	for _, resource := range resources {
-		if resource.PortMin <= port && port <= resource.PortMax &&
-			(strings.EqualFold(resource.Protocol, protocol) || strings.EqualFold(resource.Protocol, "all")) {
+		protocolMatches := resource.Protocol == network || resource.Protocol == "all"
+		portMatches := network == "icmp" || resource.PortMin <= port && port <= resource.PortMax
+		if protocolMatches && portMatches && (accept == nil || accept(resource)) {
 			return resource, true
 		}
 	}
@@ -59,12 +77,23 @@ type Client interface {
 	IP() (net.IP, error)
 	IPSet() (*netaddr.IPSet, error)
 	IPResources() ([]IPResource, error)
-	DomainResources() (map[string]DomainResourceSet, error)
-	Resources() ([]Resource, error)
-	DNSResource() (map[string]net.IP, error)
+	DomainResources() (DomainResources, error)
+	DNSResource() (map[string][]net.IP, error)
 	DNSServer() (string, error)
 
 	CanUseTCPTunnel() bool
 	DialTCP(ctx context.Context, addr *net.TCPAddr) (net.Conn, error)
 	NewL3Conn() (io.ReadWriteCloser, error)
+}
+
+type IPUpdateHandlerSetter interface {
+	SetIPUpdateHandler(func(net.IP) error)
+}
+
+func RegisterIPUpdateHandler(c Client, handler func(net.IP) error) bool {
+	setter, ok := c.(IPUpdateHandlerSetter)
+	if ok {
+		setter.SetIPUpdateHandler(handler)
+	}
+	return ok
 }

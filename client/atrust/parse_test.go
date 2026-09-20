@@ -89,8 +89,8 @@ func TestParseResourcePreservesEveryRuleForSharedDomain(t *testing.T) {
 	if got := len(resources); got != 2 {
 		t.Fatalf("shared domain resource count = %d, want 2: %#v", got, resources)
 	}
-	web, webFound := resources.Match(443, "tcp")
-	ssh, sshFound := resources.Match(22, "tcp")
+	web, webFound := client.MatchDomainResource(resources, "tcp", 443)
+	ssh, sshFound := client.MatchDomainResource(resources, "tcp", 22)
 	if !webFound || web.AppID != "web" || web.NodeGroupID != "web-nodes" {
 		t.Fatalf("web routing metadata = %#v, found %v", web, webFound)
 	}

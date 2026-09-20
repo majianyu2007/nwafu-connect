@@ -8,77 +8,71 @@ import (
 
 type domainResourceEntry struct {
 	domain    string
-	resources client.DomainResourceSet
+	resources []client.DomainResource
 }
 
 type domainResourceNode struct {
 	children map[byte]*domainResourceNode
-	exact    *domainResourceEntry
-	wildcard *domainResourceEntry
+	entry    *domainResourceEntry
 }
 
 type domainResourceIndex struct {
 	root *domainResourceNode
 }
 
-func newDomainResourceIndex(resources map[string]client.DomainResourceSet) *domainResourceIndex {
+func newDomainResourceIndex(resources client.DomainResources) *domainResourceIndex {
 	index := &domainResourceIndex{root: &domainResourceNode{}}
-	for pattern, resourceSet := range resources {
-		pattern = normalizeHostname(pattern)
-		wildcard := strings.HasPrefix(pattern, "*.") || strings.HasPrefix(pattern, ".")
-		domain := strings.TrimPrefix(strings.TrimPrefix(pattern, "*."), ".")
-		if domain == "" {
+	for domain, domainResources := range resources {
+		normalized := normalizeHostname(domain)
+		if strings.HasPrefix(normalized, "*.") {
+			normalized = normalized[1:]
+		}
+		if normalized == "" {
 			continue
 		}
 		node := index.root
-		for pos := len(domain) - 1; pos >= 0; pos-- {
+		for pos := len(normalized) - 1; pos >= 0; pos-- {
 			if node.children == nil {
 				node.children = make(map[byte]*domainResourceNode)
 			}
-			child := node.children[domain[pos]]
+			child := node.children[normalized[pos]]
 			if child == nil {
 				child = &domainResourceNode{}
-				node.children[domain[pos]] = child
+				node.children[normalized[pos]] = child
 			}
 			node = child
 		}
-		entry := &domainResourceEntry{domain: domain, resources: resourceSet}
-		if wildcard {
-			node.wildcard = entry
-		} else {
-			node.exact = entry
+		if node.entry == nil {
+			node.entry = &domainResourceEntry{domain: domain}
 		}
+		node.entry.resources = append(node.entry.resources, domainResources...)
 	}
 	return index
 }
 
-func (i *domainResourceIndex) Match(host string) (client.DomainResourceSet, string, bool) {
-	host = normalizeHostname(host)
-	if host == "" || i == nil || i.root == nil {
-		return nil, "", false
+func (i *domainResourceIndex) Match(host string) (string, []client.DomainResource, bool) {
+	if i == nil || i.root == nil {
+		return "", nil, false
 	}
 	node := i.root
-	var best *domainResourceEntry
+	var matches []*domainResourceEntry
 	for pos := len(host) - 1; pos >= 0; pos-- {
 		node = node.children[host[pos]]
 		if node == nil {
 			break
 		}
-		if pos != 0 && host[pos-1] != '.' {
-			continue
-		}
-		if node.exact != nil {
-			best = node.exact
-		} else if pos != 0 && node.wildcard != nil {
-			best = node.wildcard
+		boundary := pos == 0 || host[pos] == '.' || host[pos-1] == '.'
+		if node.entry != nil && boundary {
+			matches = append(matches, node.entry)
 		}
 	}
-	if best == nil {
-		return nil, "", false
+	if len(matches) == 0 {
+		return "", nil, false
 	}
-	return best.resources, best.domain, true
-}
-
-func normalizeHostname(host string) string {
-	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	mostSpecific := matches[len(matches)-1]
+	resources := make([]client.DomainResource, 0)
+	for pos := len(matches) - 1; pos >= 0; pos-- {
+		resources = append(resources, matches[pos].resources...)
+	}
+	return mostSpecific.domain, resources, true
 }

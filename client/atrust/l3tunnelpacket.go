@@ -8,41 +8,28 @@ import (
 	"strings"
 
 	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/internal/ipresource"
 	"github.com/majianyu2007/nwafu-connect/internal/zctcpip"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 func (t *L3Tunnel) processIPV4(packet zctcpip.IPv4Packet) error {
-	if !packet.Valid() {
-		return fmt.Errorf("invalid IPv4 packet")
-	}
 	protocol := ""
 	port := -1
 	switch packet.Protocol() {
 	case zctcpip.TCP:
-		tcpPacket := zctcpip.TCPPacket(packet.Payload())
-		if len(tcpPacket) < zctcpip.TCPHeaderSize || !tcpPacket.Valid() {
-			return fmt.Errorf("invalid TCP packet")
-		}
 		protocol = "tcp"
-		port = int(tcpPacket.DestinationPort())
+		port = int(zctcpip.TCPPacket(packet.Payload()).DestinationPort())
 	case zctcpip.UDP:
-		udpPacket := zctcpip.UDPPacket(packet.Payload())
-		if len(udpPacket) < zctcpip.UDPHeaderSize || !udpPacket.Valid() {
-			return fmt.Errorf("invalid UDP packet")
-		}
 		protocol = "udp"
-		port = int(udpPacket.DestinationPort())
+		port = int(zctcpip.UDPPacket(packet.Payload()).DestinationPort())
 	case zctcpip.ICMP:
-		if icmpPacket := zctcpip.ICMPPacket(packet.Payload()); !icmpPacket.Valid() {
-			return fmt.Errorf("invalid ICMP packet")
-		}
 		protocol = "icmp"
 	default:
 		return fmt.Errorf("protocol %d: %w", packet.Protocol(), client.ErrResourceNotFound)
 	}
 
-	resource, ok := t.resourceIndex.Match(packet.DestinationIP(), protocol, port)
+	resource, ok := matchL3IPResource(t.resourceIndex, packet.DestinationIP(), protocol, port)
 	if ok {
 		return t.writePacket(packet, resource.AppID, resource.NodeGroupID)
 	}
@@ -51,6 +38,12 @@ func (t *L3Tunnel) processIPV4(packet zctcpip.IPv4Packet) error {
 		return fmt.Errorf("%s:%d, [%s]: %w", packet.DestinationIP(), port, protocol, client.ErrResourceNotFound)
 	}
 	return fmt.Errorf("%s, [%s]: %w", packet.DestinationIP(), protocol, client.ErrResourceNotFound)
+}
+
+func matchL3IPResource(index *ipresource.Index, destination net.IP, protocol string, port int) (client.IPResource, bool) {
+	return index.MatchWhere(destination, protocol, port, func(resource client.IPResource) bool {
+		return protocol != "tcp" || resource.EnableTCPPrefL3
+	})
 }
 
 func (t *L3Tunnel) writePacket(packet zctcpip.IPv4Packet, appID, nodeGroupID string) error {
@@ -62,37 +55,39 @@ func (t *L3Tunnel) writePacket(packet zctcpip.IPv4Packet, appID, nodeGroupID str
 
 	conn, err := t.getConn(nodeGroupID)
 	if err != nil {
+		if isClosedConnErr(err) {
+			log.Printf("Drop packet while l3-tunnel reconnects after connection failure: %v", err)
+			return nil
+		}
 		return err
 	}
 	log.DebugPrintf("l3-tunnel send packet appID=%s group=%s len=%d", appID, nodeGroupID, len(packet))
 	logPacket("send", packet)
 	err = conn.WritePacket(meta, appID, nodeGroupID, packet)
-	for retry := 0; retry < 5 && isClosedConnErr(err); retry++ {
+	for retry := 0; retry < 1 && isClosedConnErr(err); retry++ {
 		// If the cached tunnel conn was closed by network flaps, evict it and retry.
 		log.Printf("Write packet failed with closed connection, evicting conn and retrying: %v", err)
 		t.evictConn(nodeGroupID, conn)
+		t.startReconnect(nodeGroupID)
 		retryConn, retryErr := t.getConn(nodeGroupID)
 		if retryErr != nil {
+			if isClosedConnErr(retryErr) {
+				err = retryErr
+				continue
+			}
 			return retryErr
 		}
 		conn = retryConn
 		err = conn.WritePacket(meta, appID, nodeGroupID, packet)
 	}
 	if isAuthTimeoutErr(err) {
-		// Auth timeout can leave the conntrack entry stuck without a token.
-		// Rebuild the tunnel once; if it still fails, let the stack drop this packet.
-		log.Printf("Write packet failed with auth timeout, evicting conn and retrying once: %v", err)
-		t.evictConn(nodeGroupID, conn)
-		retryConn, retryErr := t.getConn(nodeGroupID)
-		if retryErr != nil {
-			return retryErr
-		}
-		conn = retryConn
-		err = conn.WritePacket(meta, appID, nodeGroupID, packet)
+		log.Printf("Drop packet after conntrack authentication timed out: %v", err)
+		return nil
 	}
-	if isAuthTimeoutErr(err) {
-		log.Printf("Drop packet after l3-tunnel auth timeout retry failed: %v", err)
+	if isClosedConnErr(err) {
+		log.Printf("Drop packet while l3-tunnel reconnect remains unavailable: %v", err)
 		t.evictConn(nodeGroupID, conn)
+		t.startReconnect(nodeGroupID)
 		return nil
 	}
 	return err
@@ -102,11 +97,10 @@ func isClosedConnErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
+	if errors.Is(err, net.ErrClosed) {
 		return true
 	}
-	var networkError net.Error
-	if errors.As(err, &networkError) && networkError.Timeout() {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 	return strings.Contains(err.Error(), "use of closed network connection")

@@ -26,7 +26,7 @@ func TestNewDNSServerKeepsOnlyValidAddresses(t *testing.T) {
 }
 
 func TestDNSServerReturnsConfiguredTTL(t *testing.T) {
-	resolver := resolve.NewResolver(nil, "", "", 3600, nil, map[string]net.IP{
+	resolver := resolve.NewResolver(nil, "", "", 3600, nil, map[string][]net.IP{
 		"library.example": net.ParseIP("192.0.2.10"),
 	}, false, false)
 	defer resolver.Close()
