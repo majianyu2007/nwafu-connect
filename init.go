@@ -379,7 +379,12 @@ func applyCollectionValues(k *koanf.Koanf, values collectionValues) error {
 	tcp := values[collectionTCPPortForwarding]
 	udp := values[collectionUDPPortForwarding]
 	if tcp.Set || udp.Set {
-		var entries []configs.SinglePortForwarding
+		var previous configs.Config
+  if err := k.Unmarshal("", &previous); err != nil { return err }
+  var entries []configs.SinglePortForwarding
+  for _, entry := range previous.PortForwardingList {
+   if (entry.NetworkType == "tcp" && !tcp.Set) || (entry.NetworkType == "udp" && !udp.Set) { entries = append(entries, entry) }
+  }
 		for _, item := range []struct {
 			value   collectionValue
 			network string

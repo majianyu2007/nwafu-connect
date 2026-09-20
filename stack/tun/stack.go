@@ -3,6 +3,8 @@
 package tun
 
 import (
+ "net"
+ "sync"
 	"context"
 	"errors"
 	"fmt"

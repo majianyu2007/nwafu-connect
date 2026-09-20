@@ -58,3 +58,10 @@ sid = ""
 device_id = ""
 sign_key = ""
 resource_file = ""
+# 底层网络选项（留空使用系统默认）
+local_dns_server = ""
+bind_interface = ""
+auto_detect_interface = false
+# 调试输出默认关闭；TLS 密钥日志可用于解密抓包，请妥善保管。
+debug_pcap_file = ""
+debug_tls_log_file = ""

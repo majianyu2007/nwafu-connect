@@ -74,7 +74,7 @@ func TestUDPForwardDialFailureReleasesConcurrentPackets(t *testing.T) {
 		}},
 		dest:             &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 53},
 		connections:      make(map[netip.AddrPort]*UDPConnection),
-		connectionsMutex: new(sync.RWMutex),
+		connectionsMutex: sync.RWMutex{},
 		timeout:          time.Minute,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -112,9 +112,10 @@ func TestUDPForwardDialFailureReleasesConcurrentPackets(t *testing.T) {
 
 func TestUDPForwardGoroutinesAreBoundedPerClient(t *testing.T) {
 	upstream := newBlockingUDPConn()
-	forward := newUDPForward(udpForwardTestStack{dialUDP: func(context.Context, *net.UDPAddr) (net.Conn, error) {
+	forward, err := newUDPForward(udpForwardTestStack{dialUDP: func(context.Context, *net.UDPAddr) (net.Conn, error) {
 		return upstream, nil
 	}}, "127.0.0.1:0", "192.0.2.1:53")
+ if err != nil { t.Fatal(err) }
 	done := make(chan struct{})
 	baseline := runtime.NumGoroutine()
 	go func() {
@@ -174,10 +175,11 @@ func TestUDPForwardPreservesDatagramsAndReusesSession(t *testing.T) {
 	}()
 
 	var dials atomic.Int32
-	forward := newUDPForward(udpForwardTestStack{dialUDP: func(ctx context.Context, _ *net.UDPAddr) (net.Conn, error) {
+	forward, err := newUDPForward(udpForwardTestStack{dialUDP: func(ctx context.Context, _ *net.UDPAddr) (net.Conn, error) {
 		dials.Add(1)
 		return (&net.Dialer{}).DialContext(ctx, "udp", upstream.LocalAddr().String())
 	}}, "127.0.0.1:0", "192.0.2.1:53")
+ if err != nil { t.Fatal(err) }
 	done := make(chan struct{})
 	go func() {
 		forward.startUDPForward()
@@ -273,7 +275,7 @@ func BenchmarkUDPForwardHandle(b *testing.B) {
 	conn := &UDPConnection{ctx: connCtx, cancel: connCancel, send: make(chan udpDatagram, udpForwardQueueSize)}
 	forward := &UDPForward{
 		connections:      map[netip.AddrPort]*UDPConnection{addr.AddrPort(): conn},
-		connectionsMutex: new(sync.RWMutex),
+		connectionsMutex: sync.RWMutex{},
 		ctx:              ctx,
 		cancel:           cancel,
 	}

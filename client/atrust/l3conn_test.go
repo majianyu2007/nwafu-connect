@@ -16,7 +16,7 @@ func testL3Tunnel() *L3Tunnel {
 	}
 }
 
-func TestL3ConnCloseUnblocksRead(t *testing.T) {
+func TestCampusL3ConnCloseUnblocksRead(t *testing.T) {
 	tunnel := testL3Tunnel()
 	connection, err := tunnel.NewL3Conn()
 	if err != nil {

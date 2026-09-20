@@ -31,9 +31,13 @@ jobs:
         run: go build -o /tmp/nwafu-connect .
       - name: Save formatting and dependency diff
         if: always()
-        run: git diff > /tmp/format-and-modules.patch
+        run: |
+          git diff > /tmp/format-and-modules.patch
+          cp "$(go env GOROOT)/bin/gofmt" /tmp/gofmt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: format-and-modules
-          path: /tmp/format-and-modules.patch
+          path: |
+            /tmp/format-and-modules.patch
+            /tmp/gofmt

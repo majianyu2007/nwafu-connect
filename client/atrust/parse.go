@@ -207,10 +207,7 @@ func (c *Client) parseResource(resource []byte) error {
 				isDomain := hostIP == nil && cidrErr != nil && !isRange
 				domainKey := ""
 				if isDomain {
-					domainKey = strings.ToLower(strings.TrimSuffix(hostStr, "."))
-					if strings.HasPrefix(domainKey, "*.") {
-						domainKey = strings.TrimPrefix(domainKey, "*")
-					}
+					domainKey = normalizePolicyDomain(hostStr)
 					if domainKey == "" || strings.Contains(domainKey, "*") {
 						log.DebugPrintf("unsupported wildcard domain: %s", hostStr)
 						continue
@@ -377,4 +374,11 @@ func (c *Client) parseResource(resource []byte) error {
 	c.resourceIndex = ipresource.New(c.ipResources)
 
 	return nil
+}
+
+func normalizePolicyDomain(host string) string {
+ host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+ if strings.HasPrefix(host, "*.") { host = strings.TrimPrefix(host, "*") }
+ if strings.Contains(host, "*") { return "" }
+ return host
 }

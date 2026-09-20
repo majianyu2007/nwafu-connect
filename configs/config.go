@@ -71,6 +71,12 @@ func Default() Config { return Config{
 
 type (
 	ConfigTOML struct {
+  Protocol *string `toml:"protocol"`
+  LocalDNSServer *string `toml:"local_dns_server"`
+  DebugPCAPFile *string `toml:"debug_pcap_file"`
+  DebugTLSLogFile *string `toml:"debug_tls_log_file"`
+  BindInterface *string `toml:"bind_interface"`
+  AutoDetectInterface *bool `toml:"auto_detect_interface"`
 		ServerAddress           *string                    `toml:"server_address"`
 		ServerPort              *int                       `toml:"server_port"`
 		Username                *string                    `toml:"username"`
