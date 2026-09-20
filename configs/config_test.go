@@ -7,8 +7,8 @@ func TestDefault(t *testing.T) {
 	if cfg.Protocol != "atrust" {
 		t.Fatalf("Protocol = %q, want atrust", cfg.Protocol)
 	}
-	if cfg.ServerAddress != "" {
-		t.Fatalf("ServerAddress = %q, want derived default", cfg.ServerAddress)
+	if cfg.ServerAddress != "vpn.nwafu.edu.cn" {
+		t.Fatalf("ServerAddress = %q, want vpn.nwafu.edu.cn", cfg.ServerAddress)
 	}
 	if cfg.ServerPort != 443 {
 		t.Fatalf("ServerPort = %d, want 443", cfg.ServerPort)

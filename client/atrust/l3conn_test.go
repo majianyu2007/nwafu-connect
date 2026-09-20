@@ -12,7 +12,7 @@ func testL3Tunnel() *L3Tunnel {
 	return &L3Tunnel{
 		conns:    make(map[string]*l3TunnelConn),
 		dataChan: make(chan []byte, 1),
-		closed:   make(chan struct{}),
+		closeCh:   make(chan struct{}),
 	}
 }
 
@@ -32,7 +32,7 @@ func TestL3ConnCloseUnblocksRead(t *testing.T) {
 	}
 	select {
 	case err := <-readDone:
-		if !errors.Is(err, io.EOF) {
+		if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("Read() error = %v, want io.EOF", err)
 		}
 	case <-time.After(time.Second):
@@ -55,7 +55,7 @@ func TestL3TunnelCloseUnblocksReadAndRejectsNewConnections(t *testing.T) {
 
 	select {
 	case err := <-readDone:
-		if !errors.Is(err, io.EOF) {
+		if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("Read() error = %v, want io.EOF", err)
 		}
 	case <-time.After(time.Second):

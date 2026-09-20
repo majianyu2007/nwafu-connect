@@ -15,10 +15,10 @@ require (
 	github.com/mythologyli/sing-tun v0.0.0-20260201144630-c04d9db95dc7
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pquerna/otp v1.5.0
+	github.com/sagernet/sing v0.7.18
 	github.com/shadowsocks/go-shadowsocks2 v0.1.5
 	github.com/things-go/go-socks5 v0.1.1
 	golang.org/x/net v0.55.0
-	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.45.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	golang.zx2c4.com/wireguard/windows v1.0.1
@@ -57,7 +57,6 @@ require (
 	github.com/rymdport/portal v0.4.2 // indirect
 	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61 // indirect
 	github.com/sagernet/netlink v0.0.0-20240916134442-83396419aa8b // indirect
-	github.com/sagernet/sing v0.7.18 // indirect
 	github.com/scjalliance/comshim v0.0.0-20251021001035-b69f3cdad6f3 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c // indirect
@@ -71,6 +70,7 @@ require (
 	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
@@ -79,25 +79,17 @@ require (
 )
 
 require (
-	github.com/beevik/etree v1.6.0
+	github.com/fatih/structs v1.1.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/knadh/koanf/parsers/toml/v2 v2.2.2
 	github.com/knadh/koanf/providers/env/v2 v2.0.1
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/providers/posflag v1.0.2
 	github.com/knadh/koanf/providers/structs v1.0.1
 	github.com/knadh/koanf/v2 v2.3.6
-	github.com/refraction-networking/utls v1.8.2
-	github.com/shirou/gopsutil/v4 v4.26.4
-	github.com/spf13/pflag v1.0.10
-	github.com/andybalholm/brotli v1.2.1 // indirect
-	github.com/ebitengine/purego v0.10.0 // indirect
-	github.com/fatih/structs v1.1.0 // indirect
-	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
-	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
-	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	github.com/spf13/pflag v1.0.10
 )

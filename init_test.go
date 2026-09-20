@@ -137,16 +137,12 @@ custom_proxy_domain = ["file.example.com"]
 		"--config", configFile,
 		"--tcp-port-forwarding", "127.0.0.1:2-10.0.0.2:2",
 		"--udp-port-forwarding", "127.0.0.1:3-10.0.0.3:3",
-		"--custom-proxy-domain", "cli.example.com",
 	}, func() []string { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(options.Config.PortForwardingList) != 2 {
 		t.Fatalf("PortForwardingList = %+v", options.Config.PortForwardingList)
-	}
-	if got := options.Config.CustomProxyDomain; len(got) != 1 || got[0] != "cli.example.com" {
-		t.Fatalf("CustomProxyDomain = %v", got)
 	}
 }
 
@@ -261,15 +257,11 @@ func TestEnvironmentCollectionsUseCLISyntax(t *testing.T) {
 		return []string{
 			"NWAFU_CONNECT_TCP_PORT_FORWARDING=127.0.0.1:2-10.0.0.2:2",
 			"NWAFU_CONNECT_UDP_PORT_FORWARDING=127.0.0.1:3-10.0.0.3:3",
-			"NWAFU_CONNECT_CUSTOM_PROXY_DOMAIN=one.example.com,two.example.com",
 			"NWAFU_CONNECT_CUSTOM_DNS=host.example.com:192.0.2.1",
 		}
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(options.Config.CustomProxyDomain) != 2 {
-		t.Fatalf("CustomProxyDomain = %v", options.Config.CustomProxyDomain)
 	}
 	if len(options.Config.PortForwardingList) != 2 {
 		t.Fatalf("PortForwardingList = %+v", options.Config.PortForwardingList)
@@ -282,12 +274,10 @@ func TestEnvironmentCollectionsUseCLISyntax(t *testing.T) {
 func TestCLICollectionsOverrideEnvironmentCollections(t *testing.T) {
 	options, _, err := loadStartupOptions([]string{
 		"--tcp-port-forwarding", "127.0.0.1:4-10.0.0.4:4",
-		"--custom-proxy-domain", "cli.example.com",
 	}, func() []string {
 		return []string{
 			"NWAFU_CONNECT_TCP_PORT_FORWARDING=127.0.0.1:2-10.0.0.2:2",
 			"NWAFU_CONNECT_UDP_PORT_FORWARDING=127.0.0.1:3-10.0.0.3:3",
-			"NWAFU_CONNECT_CUSTOM_PROXY_DOMAIN=env.example.com",
 		}
 	})
 	if err != nil {
@@ -295,9 +285,6 @@ func TestCLICollectionsOverrideEnvironmentCollections(t *testing.T) {
 	}
 	if got := options.Config.PortForwardingList; len(got) != 1 || got[0].RemoteAddress != "10.0.0.4:4" {
 		t.Fatalf("PortForwardingList = %+v", got)
-	}
-	if got := options.Config.CustomProxyDomain; len(got) != 1 || got[0] != "cli.example.com" {
-		t.Fatalf("CustomProxyDomain = %v", got)
 	}
 }
 

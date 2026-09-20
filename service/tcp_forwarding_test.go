@@ -71,7 +71,7 @@ type forwardingCapturingStack struct {
 	prefersL3 bool
 }
 
-func (*forwardingCapturingStack) Run()                                                {}
+func (*forwardingCapturingStack) Run() error { return nil }
 func (*forwardingCapturingStack) SetupResolve(zcdns.LocalServer)                      {}
 func (*forwardingCapturingStack) SetupIPPool(*ippool.IPPool[[]client.DomainResource]) {}
 func (s *forwardingCapturingStack) DialTCP(ctx context.Context, address *net.TCPAddr) (net.Conn, error) {

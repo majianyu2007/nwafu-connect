@@ -19,20 +19,7 @@ type ClientResource struct {
 		AppList struct {
 			Data struct {
 				AppInfo []struct {
-					Apps []struct {
-						ID          string
-						NodeGroupID string
- EnableTCPPrefL3 bool
- AddrPretend bool
-						Name        string
-						Description string
-						AddressList []struct {
-							Protocol string
-							Port     string
-							Host     string
-							IP       []string
-						}
-					}
+					Apps []resourceApp
 				}
 
 				Config struct {
@@ -55,6 +42,14 @@ type ClientResource struct {
 		SDPPolicy struct {
 			Data struct {
 				ClientOption struct {
+					Tun0RTT struct {
+						MaxIdleConnNum    int64 `json:"maxIdleConnNum"`
+						MaxIdleLingerTime int64 `json:"maxIdleLingerTime"`
+						MinIdleConnNum    int64 `json:"minIdleConnNum"`
+						Enable            bool  `json:"enable"`
+						PreConnNum        int64 `json:"preConnNum"`
+					} `json:"tun0rtt"`
+
 					DNSOption struct {
 						FirstDNS  string
 						SecondDNS string
@@ -68,6 +63,31 @@ type ClientResource struct {
 			}
 		}
 	}
+}
+
+type resourceApp struct {
+ Name string
+ Description string
+	ID              string
+	NodeGroupID     string
+	AccessModel     string
+	EnableTCPPrefL3 bool
+	AddrPretend     any `json:"addrPretend"`
+	AddressList     []resourceAddress
+}
+
+type resourceAddress struct {
+	Protocol string
+	Port     string
+	Host     string
+	IP       []string
+}
+
+func resourceAddrPretend(value any) bool {
+	if value, ok := value.(bool); ok {
+		return value
+	}
+	return true
 }
 
 func parseResourcePort(raw string) (int, int, error) {
@@ -134,6 +154,7 @@ func (c *Client) parseResource(resource []byte) error {
 
 	for _, app := range clientResource.Data.AppList.Data.AppInfo {
 		for _, appItem := range app.Apps {
+			if appItem.AccessModel != "" && appItem.AccessModel != "L3VPN" { continue }
 			parsedResource := client.Resource{Name: appItem.Name, Description: appItem.Description}
 			for _, address := range appItem.AddressList {
 				protocol := strings.ToLower(strings.TrimSpace(address.Protocol))
@@ -255,7 +276,7 @@ func (c *Client) parseResource(resource []byte) error {
 						AppID:       appItem.ID,
 						NodeGroupID: appItem.NodeGroupID,
  EnableTCPPrefL3: appItem.EnableTCPPrefL3,
- AddrPretend: appItem.AddrPretend,
+ AddrPretend: resourceAddrPretend(appItem.AddrPretend),
 					})
 					log.DebugPrintf("Add domain: %s, Port range: %d ~ %d, [%s]", hostStr, portMin, portMax, protocol)
 				}

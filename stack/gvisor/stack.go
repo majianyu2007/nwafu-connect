@@ -133,7 +133,7 @@ func NewStack(vpnClient client.Client) (*Stack, error) {
 		HandleLocal:        true,
 	})
 
-	l3Conn, err := client.NewL3Conn()
+	l3Conn, err := vpnClient.NewL3Conn()
 	if err != nil {
 		return nil, fmt.Errorf("create L3 tunnel connection: %w", err)
 	}

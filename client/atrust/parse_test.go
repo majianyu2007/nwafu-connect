@@ -1,6 +1,6 @@
 package atrust
 
-import "testing"
+import ("testing"; "github.com/majianyu2007/nwafu-connect/client")
 
 func TestParseResourceSkipsEmptyHosts(t *testing.T) {
 	vpnClient := &Client{}
@@ -74,7 +74,7 @@ func TestParseResourceRoutesEveryServerIssuedDomainIP(t *testing.T) {
 			t.Fatalf("IP resource %d lost routing metadata: %#v", index, resource)
 		}
 	}
-	if got := vpnClient.dnsResource["library.example.com"].String(); got != "10.0.0.10" {
+	if got := vpnClient.dnsResource["library.example.com"][0].String(); got != "10.0.0.10" {
 		t.Fatalf("preferred DNS resource = %q, want first valid address", got)
 	}
 }
