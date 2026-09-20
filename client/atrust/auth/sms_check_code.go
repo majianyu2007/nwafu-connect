@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
@@ -25,7 +26,15 @@ func (m SMSLogin) LoginDomain() string {
 }
 
 func (m SMSLogin) login(s *Session, _ AuthInfo) error {
-	return s.loginAuthSmsCheckCode(m.Phone, m.Domain, m.GraphCodeFile)
+	if err := s.loginAuthSmsCheckCode(m.Phone, m.Domain, m.GraphCodeFile); err != nil {
+		return err
+	}
+	s.username = smsUsername(m.Phone, m.Domain)
+	return nil
+}
+
+func smsUsername(phone, domain string) string {
+	return phone + "@" + domain
 }
 
 func (s *Session) loginAuthSmsCheckCode(phone, loginDomain, graphCodeFile string) error {
@@ -37,17 +46,16 @@ func (s *Session) loginAuthSmsCheckCode(phone, loginDomain, graphCodeFile string
 		return err
 	}
 
-	code, err := readVerificationCode(
-		"输入短信验证码",
-		"请输入学校网关发送到已登记手机的验证码。",
-		false,
-	)
-	if err != nil {
-		return err
+	challenge := authchallenge.CodeChallenge{
+		Kind:    authchallenge.CodeSMS,
+		Message: "Please enter the SMS verification code:",
 	}
-
+	response, err := s.challengeHandler.HandleCodeChallenge(challenge)
+	if err != nil {
+		return fmt.Errorf("complete primary SMS challenge: %w", err)
+	}
 	smsCheckCodeProcess := func(graphCheckCode string) (int, error) {
-		return s.smsCheckCodeImpl(code, phone, loginDomain, graphCheckCode)
+		return s.smsCheckCodeImpl(response.Code, phone, loginDomain, graphCheckCode)
 	}
 	return s.withGraphCheckCode(smsCheckCodeProcess, graphCodeFile)
 }
@@ -168,6 +176,9 @@ func (s *Session) smsCheckCodeImpl(code, phone, loginDomain, graphCheckCode stri
 		return 0, fmt.Errorf("SMS verification response did not include a ticket")
 	}
 
+	if re.Data.Ticket == "" && re.Data.GraphCheckCodeEnable == 0 {
+		return 0, fmt.Errorf("SMS authentication succeeded without a ticket")
+	}
 	s.ticket = re.Data.Ticket
 	return re.Data.GraphCheckCodeEnable, nil
 }

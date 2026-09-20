@@ -22,8 +22,6 @@ type node struct {
 	right    *node
 }
 
-// Index matches IPv4 destinations against a fixed set of gateway resources.
-// Overlapping rules preserve their original server-provided order.
 type Index struct {
 	root *node
 }
@@ -31,21 +29,14 @@ type Index struct {
 func New(resources []client.IPResource) *Index {
 	indexed := make([]indexedResource, 0, len(resources))
 	for order, resource := range resources {
-		start, startOK := ipv4Uint32(resource.IPMin)
-		end, endOK := ipv4Uint32(resource.IPMax)
+		start, startOK := IPv4Uint32(resource.IPMin)
+		end, endOK := IPv4Uint32(resource.IPMax)
 		if !startOK || !endOK || start > end {
 			continue
 		}
-		indexed = append(indexed, indexedResource{
-			resource: resource,
-			start:    start,
-			end:      end,
-			order:    order,
-		})
+		indexed = append(indexed, indexedResource{resource: resource, start: start, end: end, order: order})
 	}
-	sort.SliceStable(indexed, func(i, j int) bool {
-		return indexed[i].start < indexed[j].start
-	})
+	sort.SliceStable(indexed, func(i, j int) bool { return indexed[i].start < indexed[j].start })
 	return &Index{root: build(indexed)}
 }
 
@@ -68,38 +59,55 @@ func build(resources []indexedResource) *node {
 }
 
 func (i *Index) Match(destination net.IP, protocol string, port int) (client.IPResource, bool) {
-	ip, ok := ipv4Uint32(destination)
+	return i.match(destination, protocol, port, false, nil)
+}
+
+func (i *Index) MatchLast(destination net.IP, protocol string, port int) (client.IPResource, bool) {
+	return i.match(destination, protocol, port, true, nil)
+}
+
+func (i *Index) MatchWhere(destination net.IP, protocol string, port int, accept func(client.IPResource) bool) (client.IPResource, bool) {
+	return i.match(destination, protocol, port, false, accept)
+}
+
+func (i *Index) MatchLastWhere(destination net.IP, protocol string, port int, accept func(client.IPResource) bool) (client.IPResource, bool) {
+	return i.match(destination, protocol, port, true, accept)
+}
+
+func (i *Index) match(destination net.IP, protocol string, port int, preferLast bool, accept func(client.IPResource) bool) (client.IPResource, bool) {
+	ip, ok := IPv4Uint32(destination)
 	if !ok || i == nil || i.root == nil {
 		return client.IPResource{}, false
 	}
 	var best *indexedResource
-	i.root.match(ip, protocol, port, &best)
+	i.root.match(ip, protocol, port, preferLast, accept, &best)
 	if best == nil {
 		return client.IPResource{}, false
 	}
 	return best.resource, true
 }
 
-func (n *node) match(ip uint32, protocol string, port int, best **indexedResource) {
+func (n *node) match(ip uint32, protocol string, port int, preferLast bool, accept func(client.IPResource) bool, best **indexedResource) {
 	if n.maxEnd < ip {
 		return
 	}
 	if n.left != nil && n.left.maxEnd >= ip {
-		n.left.match(ip, protocol, port, best)
+		n.left.match(ip, protocol, port, preferLast, accept, best)
 	}
 	resource := &n.resource
 	if resource.start <= ip && ip <= resource.end &&
 		(resource.resource.Protocol == protocol || resource.resource.Protocol == "all") &&
 		(protocol == "icmp" || resource.resource.PortMin <= port && port <= resource.resource.PortMax) &&
-		(*best == nil || resource.order < (*best).order) {
+		(accept == nil || accept(resource.resource)) &&
+		(*best == nil || (!preferLast && resource.order < (*best).order) || (preferLast && resource.order > (*best).order)) {
 		*best = resource
 	}
 	if resource.start <= ip && n.right != nil && n.right.maxEnd >= ip {
-		n.right.match(ip, protocol, port, best)
+		n.right.match(ip, protocol, port, preferLast, accept, best)
 	}
 }
 
-func ipv4Uint32(ip net.IP) (uint32, bool) {
+func IPv4Uint32(ip net.IP) (uint32, bool) {
 	ip = ip.To4()
 	if ip == nil {
 		return 0, false

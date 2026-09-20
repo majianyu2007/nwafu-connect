@@ -12,7 +12,7 @@ func TestNewSessionRejectsUntrustedTLSCertificate(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
 
-	session := NewSession(strings.TrimPrefix(server.URL, "https://"))
+	session := NewSession(strings.TrimPrefix(server.URL, "https://"), nil)
 	response, err := session.client.Get(server.URL)
 	if err == nil {
 		response.Body.Close()
@@ -21,7 +21,7 @@ func TestNewSessionRejectsUntrustedTLSCertificate(t *testing.T) {
 }
 
 func TestLoginResultPersistsCurrentSessionCookies(t *testing.T) {
-	session := NewSession("vpn.example.com")
+	session := NewSession("vpn.example.com", nil)
 	session.client.Jar.SetCookies(
 		&url.URL{Scheme: "https", Host: "vpn.example.com"},
 		[]*http.Cookie{

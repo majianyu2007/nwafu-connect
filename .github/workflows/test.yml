@@ -1,0 +1,35 @@
+name: Test
+on:
+  push:
+    branches: ['sync/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install desktop build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev libayatana-appindicator3-dev
+      - name: Check formatting and modules
+        run: |
+          test -z "$(gofmt -l $(git ls-files '*.go'))"
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Unit tests
+        run: go test -timeout 120s ./...
+      - name: Static analysis
+        run: go vet ./...
+      - name: Build CLI
+        env:
+          CGO_ENABLED: '0'
+        run: go build -o /tmp/nwafu-connect .
+      - name: Discover public campus authentication methods
+        continue-on-error: true
+        run: timeout 35s /tmp/nwafu-connect -auth-info

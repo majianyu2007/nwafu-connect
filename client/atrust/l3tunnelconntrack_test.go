@@ -36,8 +36,8 @@ func TestConntrackManagerPrunesIdleFlows(t *testing.T) {
 	manager := newConntrackMgr()
 	idle := manager.getOrCreate("idle", "app", "group")
 	manager.mu.Lock()
-	idle.lastUsed = time.Now().Add(-conntrackIdleTTL - time.Second)
-	manager.lastSweep = time.Time{}
+	idle.expiresAt = time.Now().Add(-time.Second)
+
 	manager.mu.Unlock()
 
 	manager.getOrCreate("active", "app", "group")
@@ -49,7 +49,7 @@ func TestConntrackManagerPrunesIdleFlows(t *testing.T) {
 	}
 	select {
 	case <-idle.authCh:
-		if !errors.Is(idle.authErr, errConntrackExpired) {
+		if !errors.Is(idle.authErr, errConntrackEvicted) {
 			t.Fatalf("idle conntrack error = %v, want expiration", idle.authErr)
 		}
 	default:
@@ -60,10 +60,7 @@ func TestConntrackManagerPrunesIdleFlows(t *testing.T) {
 func TestConntrackExpireAllowsFreshAuthentication(t *testing.T) {
 	manager := newConntrackMgr()
 	expired := manager.getOrCreate("flow", "app", "group")
-	timeoutErr := fmt.Errorf("%w for flow", errL3TunnelAuthTimeout)
-	if got := manager.expire(expired, timeoutErr); !errors.Is(got, errL3TunnelAuthTimeout) {
-		t.Fatalf("expire() error = %v, want auth timeout", got)
-	}
+	manager.remove(expired.key)
 	replacement := manager.getOrCreate("flow", "app", "group")
 	if replacement == expired || replacement.authID == expired.authID {
 		t.Fatalf("expired conntrack was reused: old=%#v new=%#v", expired, replacement)

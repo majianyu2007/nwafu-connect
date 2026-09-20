@@ -194,3 +194,5 @@ ssh -o 'ProxyCommand="/Applications/NWAFU Connect.app/Contents/MacOS/nwafu-conne
 ```
 
 其中 `--proxy` 为资源门户页面显示的本地代理监听地址，`--target` 为目标校内主机与端口。Linux/Windows 用户把代理助手路径替换为安装目录中的对应可执行文件即可。
+
+`session-refresh-interval`：aTrust 会话刷新间隔（秒），默认 `1800`，`0` 关闭。TOML 键为 `session_refresh_interval`，环境变量为 `NWAFU_CONNECT_SESSION_REFRESH_INTERVAL`。刷新后的 Cookie 沿用原有私有文件权限保存。

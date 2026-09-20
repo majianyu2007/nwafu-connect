@@ -2,11 +2,12 @@ package dial
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -87,14 +88,11 @@ func (d *Dialer) dialDirectWithHTTPProxy(ctx context.Context, usedAddr string) (
 	if err := request.Write(connection); err != nil {
 		return nil, fmt.Errorf("write HTTP proxy CONNECT request: %w", err)
 	}
-	reader := bufio.NewReader(connection)
-	response, err := http.ReadResponse(reader, request)
+	bufferedConn, err := readHTTPProxyConnectResponse(connection)
 	if err != nil {
-		return nil, fmt.Errorf("read HTTP proxy CONNECT response: %w", err)
+		return nil, err
 	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP proxy CONNECT failed: %s", response.Status)
-	}
+
 	if !stopCancellation() {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -105,10 +103,7 @@ func (d *Dialer) dialDirectWithHTTPProxy(ctx context.Context, usedAddr string) (
 	}
 
 	keepConnection = true
-	if reader.Buffered() != 0 {
-		return &bufferedProxyConn{Conn: connection, reader: reader}, nil
-	}
-	return connection, nil
+	return bufferedConn, nil
 }
 
 type bufferedProxyConn struct {
@@ -206,4 +201,36 @@ func (d *Dialer) dialDirectWithSocksProxy(ctx context.Context, network, usedAddr
 	}
 	keepConnection = true
 	return connection, nil
+}
+
+const maxHTTPProxyResponseHeader = 64 << 10
+
+func readHTTPProxyConnectResponse(conn net.Conn) (net.Conn, error) {
+	reader := bufio.NewReader(conn)
+	var header bytes.Buffer
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if header.Len()+len(fragment) > maxHTTPProxyResponseHeader {
+			return nil, fmt.Errorf("HTTP proxy response header exceeds %d bytes", maxHTTPProxyResponseHeader)
+		}
+		_, _ = header.Write(fragment)
+		if bytes.HasSuffix(header.Bytes(), []byte("\r\n\r\n")) {
+			break
+		}
+		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, fmt.Errorf("read HTTP proxy response: %w", err)
+		}
+	}
+
+	request := &http.Request{Method: http.MethodConnect}
+	response, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(header.Bytes())), request)
+	if err != nil {
+		return nil, fmt.Errorf("parse HTTP proxy response: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP proxy CONNECT failed: %s", response.Status)
+	}
+
+	return &bufferedProxyConn{Conn: conn, reader: reader}, nil
 }

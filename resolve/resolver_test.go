@@ -3,278 +3,357 @@ package resolve
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
-	"sync"
-	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/majianyu2007/nwafu-connect/client"
-	"github.com/miekg/dns"
 	"github.com/patrickmn/go-cache"
 )
 
-func TestResolveDoesNotMatchPartialDomainSuffix(t *testing.T) {
-	resource := client.DomainResource{PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "campus"}
-	resolver := NewResolver(
-		nil,
-		"",
-		"",
-		60,
-		map[string]client.DomainResourceSet{"example.com": {resource}},
-		map[string]net.IP{"malicious-example.com": net.ParseIP("192.0.2.10")},
-		false,
-		false,
-	)
-	defer resolver.Close()
+var domainResourceMatchSink bool
 
-	resolvedContext, _, err := resolver.Resolve(context.Background(), "malicious-example.com")
-	if err != nil {
-		t.Fatal(err)
+func TestTCPPrefersL3UsesSelectedResource(t *testing.T) {
+	if TCPPrefersL3(context.Background()) {
+		t.Fatal("empty context unexpectedly prefers L3")
 	}
-	if got := resolvedContext.Value(ContextKeyDomainResource); got != nil {
-		t.Fatalf("partial suffix inherited campus resource: %#v", got)
+	domainCtx := context.WithValue(context.Background(), ContextKeyDomainResource, client.DomainResource{EnableTCPPrefL3: true})
+	if !TCPPrefersL3(domainCtx) {
+		t.Fatal("domain resource preference was ignored")
+	}
+	ipCtx := context.WithValue(context.Background(), ContextKeyIPResource, client.IPResource{EnableTCPPrefL3: true})
+	if !TCPPrefersL3(ipCtx) {
+		t.Fatal("IP resource preference was ignored")
 	}
 }
 
-func TestResolveMatchesDomainAtLabelBoundary(t *testing.T) {
-	resource := client.DomainResource{PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "campus"}
-	resolver := NewResolver(
-		nil,
-		"",
-		"",
-		60,
-		map[string]client.DomainResourceSet{"example.com": {resource}},
-		map[string]net.IP{"library.example.com": net.ParseIP("192.0.2.11")},
-		false,
-		false,
-	)
-	defer resolver.Close()
-
-	resolvedContext, _, err := resolver.Resolve(context.Background(), "library.example.com")
-	if err != nil {
-		t.Fatal(err)
+func TestMatchDomainResourcePreservesNormalizedSuffixMatching(t *testing.T) {
+	want := client.DomainResource{AppID: "vpn-app"}
+	index := newDomainResourceIndex(client.DomainResources{".Example.COM.": {want}})
+	domain, got, ok := matchDomainResource(index, "service.example.com")
+	if !ok {
+		t.Fatal("matchDomainResource() did not find normalized suffix")
 	}
-	got, ok := resolvedContext.Value(ContextKeyDomainResource).(client.DomainResourceSet)
-	if !ok || len(got) != 1 || got[0].AppID != resource.AppID {
-		t.Fatalf("label suffix resources = %#v, want %#v", got, resource)
+	if domain != ".Example.COM." || len(got) != 1 || got[0] != want {
+		t.Fatalf("matchDomainResource() = (%q, %#v), want original domain and %#v", domain, got, want)
 	}
 }
 
-func TestResolveCoalescesAndCachesSecondaryDNS(t *testing.T) {
-	packetConnection, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var queryCount atomic.Int32
-	dnsServer := &dns.Server{
-		PacketConn: packetConnection,
-		Handler: dns.HandlerFunc(func(writer dns.ResponseWriter, request *dns.Msg) {
-			queryCount.Add(1)
-			response := new(dns.Msg)
-			response.SetReply(request)
-			response.Answer = []dns.RR{&dns.A{
-				Hdr: dns.RR_Header{Name: request.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
-				A:   net.ParseIP("192.0.2.25"),
-			}}
-			_ = writer.WriteMsg(response)
-		}),
-	}
-	go func() { _ = dnsServer.ActivateAndServe() }()
-	defer dnsServer.Shutdown()
-
-	resolver := &Resolver{
-		secondaryResolver: &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "udp", packetConnection.LocalAddr().String())
-			},
-		},
-		ttl:      60,
-		dnsCache: cache.New(time.Minute, time.Minute),
-	}
-
-	const callers = 8
-	start := make(chan struct{})
-	var waitGroup sync.WaitGroup
-	waitGroup.Add(callers)
-	for range callers {
-		go func() {
-			defer waitGroup.Done()
-			<-start
-			_, ip, resolveErr := resolver.Resolve(context.Background(), "library.example.com")
-			if resolveErr != nil {
-				t.Errorf("Resolve() error = %v", resolveErr)
-				return
-			}
-			if got, want := ip.String(), "192.0.2.25"; got != want {
-				t.Errorf("Resolve() IP = %q, want %q", got, want)
-			}
-		}()
-	}
-	close(start)
-	waitGroup.Wait()
-	if _, _, err := resolver.Resolve(context.Background(), "library.example.com"); err != nil {
-		t.Fatal(err)
-	}
-	if got := queryCount.Load(); got != 1 {
-		t.Fatalf("secondary DNS queries = %d, want 1 coalesced and cached lookup", got)
-	}
-}
-
-func TestResolveCallerCancellationDoesNotPoisonSharedLookup(t *testing.T) {
-	packetConnection, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	queried := make(chan struct{})
-	release := make(chan struct{})
-	var queryOnce sync.Once
-	dnsServer := &dns.Server{
-		PacketConn: packetConnection,
-		Handler: dns.HandlerFunc(func(writer dns.ResponseWriter, request *dns.Msg) {
-			queryOnce.Do(func() { close(queried) })
-			<-release
-			response := new(dns.Msg)
-			response.SetReply(request)
-			response.Answer = []dns.RR{&dns.A{
-				Hdr: dns.RR_Header{Name: request.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
-				A:   net.ParseIP("192.0.2.26"),
-			}}
-			_ = writer.WriteMsg(response)
-		}),
-	}
-	go func() { _ = dnsServer.ActivateAndServe() }()
-	defer dnsServer.Shutdown()
-	defer func() {
-		select {
-		case <-release:
-		default:
-			close(release)
+func TestDomainResourceMatchRequiresLabelBoundary(t *testing.T) {
+	index := newDomainResourceIndex(client.DomainResources{"example.com": {{AppID: "vpn"}}})
+	for _, host := range []string{"example.com", "service.example.com"} {
+		if _, _, ok := index.Match(host); !ok {
+			t.Fatalf("expected %s to match", host)
 		}
-	}()
+	}
+	if _, _, ok := index.Match("notexample.com"); ok {
+		t.Fatal("partial label suffix matched domain resource")
+	}
+}
 
+func TestWildcardDomainResourceRequiresSubdomain(t *testing.T) {
+	index := newDomainResourceIndex(client.DomainResources{"*.example.com": {{AppID: "vpn"}}})
+	if _, _, ok := index.Match("service.example.com"); !ok {
+		t.Fatal("wildcard did not match subdomain")
+	}
+	if _, _, ok := index.Match("example.com"); ok {
+		t.Fatal("wildcard unexpectedly matched apex domain")
+	}
+}
+
+func BenchmarkDomainResourceMatch(b *testing.B) {
+	resources := make(client.DomainResources, 1000)
+	for i := 0; i < 1000; i++ {
+		resources[fmt.Sprintf(".resource-%04d.example", i)] = []client.DomainResource{{}}
+	}
+	index := newDomainResourceIndex(resources)
+	const host = "missing.example.com"
+
+	b.Run("index", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _, domainResourceMatchSink = index.Match(host)
+		}
+	})
+	b.Run("linear", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			matched := false
+			for domain := range resources {
+				if strings.HasSuffix(host, normalizeHostname(domain)) {
+					matched = true
+					break
+				}
+			}
+			domainResourceMatchSink = matched
+		}
+	})
+}
+
+func TestDomainResourceMatchPrefersMostSpecificDomain(t *testing.T) {
+	index := newDomainResourceIndex(client.DomainResources{
+		".cnki.net":    {{PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "wildcard"}},
+		"www.cnki.net": {{PortMin: 80, PortMax: 80, Protocol: "tcp", AppID: "exact"}},
+	})
+
+	domain, resources, ok := index.Match("www.cnki.net")
+	if !ok || domain != "www.cnki.net" || len(resources) != 2 || resources[0].AppID != "exact" {
+		t.Fatalf("Match() = (%q, %#v, %v), want exact domain resource", domain, resources, ok)
+	}
+	if resource, matched := client.MatchDomainResource(resources, "tcp", 443); !matched || resource.AppID != "wildcard" {
+		t.Fatalf("443 match = (%#v, %v), want wildcard fallback", resource, matched)
+	}
+}
+
+func TestResolverReleasesCoordinationEntry(t *testing.T) {
+	failing := failingNetResolver()
 	resolver := &Resolver{
-		secondaryResolver: &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "udp", packetConnection.LocalAddr().String())
-			},
-		},
-		ttl:      60,
-		dnsCache: cache.New(time.Minute, time.Minute),
+		remoteUDPResolver: failing,
+		remoteTCPResolver: failing,
+		secondaryResolver: failing,
+		dnsCache:          cache.New(time.Minute, 0),
+		useRemoteDNS:      true,
 	}
 
-	firstContext, cancelFirst := context.WithCancel(context.Background())
-	firstResult := make(chan error, 1)
+	_, _, _ = resolver.Resolve(context.Background(), "missing.example")
+	if entries := resolver.coordinationEntryCount(); entries != 0 {
+		t.Fatalf("coordination entries after Resolve = %d, want 0", entries)
+	}
+}
+
+func TestResolverRotatesConfiguredDNSAddresses(t *testing.T) {
+	first := net.ParseIP("192.0.2.1")
+	second := net.ParseIP("192.0.2.2")
+	resolver := &Resolver{
+		domainIndex: newDomainResourceIndex(nil),
+		dnsResource: map[string][]net.IP{"service.example": {first, second}},
+		dnsCache:    cache.New(time.Minute, 0),
+	}
+
+	_, gotFirst, err := resolver.Resolve(context.Background(), "service.example")
+	if err != nil {
+		t.Fatalf("first Resolve() error = %v", err)
+	}
+	_, gotSecond, err := resolver.Resolve(context.Background(), "service.example")
+	if err != nil {
+		t.Fatalf("second Resolve() error = %v", err)
+	}
+	if !gotFirst.Equal(first) || !gotSecond.Equal(second) {
+		t.Fatalf("rotated addresses = %s, %s, want %s, %s", gotFirst, gotSecond, first, second)
+	}
+}
+
+func TestResolverWaitingCallerHonorsContext(t *testing.T) {
+	started := make(chan struct{}, 1)
+	blocking := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	resolver := &Resolver{
+		remoteUDPResolver: blocking,
+		remoteTCPResolver: blocking,
+		secondaryResolver: failingNetResolver(),
+		dnsCache:          cache.New(time.Minute, 0),
+		useRemoteDNS:      true,
+	}
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+	leaderDone := make(chan struct{})
 	go func() {
-		_, _, resolveErr := resolver.Resolve(firstContext, "library.example.com")
-		firstResult <- resolveErr
+		_, _, _ = resolver.Resolve(leaderCtx, "blocked.example")
+		close(leaderDone)
 	}()
 	select {
-	case <-queried:
+	case <-started:
 	case <-time.After(time.Second):
-		t.Fatal("shared DNS lookup did not start")
+		t.Fatal("leader DNS lookup did not start")
 	}
 
-	firstCancellation := make(chan error, 1)
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	cancelWaiter()
+	result := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancelFirst()
-		firstCancellation <- <-firstResult
-		close(release)
+		_, _, err := resolver.Resolve(waiterCtx, "blocked.example")
+		result <- err
 	}()
 
-	secondContext, cancelSecond := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancelSecond()
-	_, ip, err := resolver.Resolve(secondContext, "library.example.com")
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting Resolve error = %v, want context.Canceled", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("waiting Resolve did not stop after context cancellation")
+	}
+
+	cancelLeader()
+	select {
+	case <-leaderDone:
+	case <-time.After(time.Second):
+		t.Fatal("leader Resolve did not stop after context cancellation")
+	}
+	deadline := time.Now().Add(time.Second)
+	for resolver.coordinationEntryCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if entries := resolver.coordinationEntryCount(); entries != 0 {
+		t.Fatalf("active coordination entries after cancellation = %d after timeout, want 0", entries)
+	}
+}
+
+func TestResolverLeaderCancellationDoesNotCancelWaiter(t *testing.T) {
+	resolver := &Resolver{}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	want := net.ParseIP("192.0.2.20")
+	lookup := func(ctx context.Context) (net.IP, error) {
+		close(started)
+		select {
+		case <-release:
+			return want, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderResult := make(chan error, 1)
+	go func() {
+		_, err := resolver.resolveCoordinated(leaderCtx, "shared.example", lookup)
+		leaderResult <- err
+	}()
+	<-started
+
+	waiterResult := make(chan struct {
+		ip  net.IP
+		err error
+	}, 1)
+	unexpectedLookup := make(chan struct{}, 1)
+	go func() {
+		ip, err := resolver.resolveCoordinated(context.Background(), "shared.example", func(context.Context) (net.IP, error) {
+			unexpectedLookup <- struct{}{}
+			return nil, errors.New("waiter unexpectedly started a second lookup")
+		})
+		waiterResult <- struct {
+			ip  net.IP
+			err error
+		}{ip: ip, err: err}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		resolver.resolutionMu.Lock()
+		waiters := resolver.resolutions["shared.example"].waiters
+		resolver.resolutionMu.Unlock()
+		if waiters == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("waiter did not join the shared lookup")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancelLeader()
+	if err := <-leaderResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader error = %v, want context.Canceled", err)
+	}
+	close(release)
+	result := <-waiterResult
+	if result.err != nil || !result.ip.Equal(want) {
+		t.Fatalf("waiter result = %s, %v, want %s, nil", result.ip, result.err, want)
+	}
+	select {
+	case <-unexpectedLookup:
+		t.Fatal("waiter unexpectedly started a second lookup")
+	default:
+	}
+}
+
+func TestLookupIPWithTCPFallbackHedgesSlowUDP(t *testing.T) {
+	want := net.ParseIP("192.0.2.10")
+	udpCanceled := make(chan struct{})
+	udp := func(ctx context.Context, _, _ string) ([]net.IP, error) {
+		<-ctx.Done()
+		close(udpCanceled)
+		return nil, ctx.Err()
+	}
+	tcp := func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{want}, nil
+	}
+
+	started := time.Now()
+	ips, udpFailed, err := lookupIPWithTCPFallback(context.Background(), "slow.example", udp, tcp, 10*time.Millisecond)
 	if err != nil {
-		t.Fatalf("second Resolve() inherited first caller cancellation: %v", err)
+		t.Fatalf("lookupIPWithTCPFallback() error = %v", err)
 	}
-	if got, want := ip.String(), "192.0.2.26"; got != want {
-		t.Fatalf("second Resolve() IP = %q, want %q", got, want)
+	if udpFailed {
+		t.Fatal("slow UDP was hedged, not proven failed")
 	}
-	if err := <-firstCancellation; !errors.Is(err, context.Canceled) {
-		t.Fatalf("first Resolve() error = %v, want context.Canceled", err)
+	if len(ips) != 1 || !ips[0].Equal(want) {
+		t.Fatalf("lookup result = %v, want %s", ips, want)
 	}
-}
-
-func TestResolveRestoresDomainMappingForCachedIP(t *testing.T) {
-	resource := client.DomainResource{PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "library"}
-	resolver := NewResolver(
-		nil,
-		"",
-		"",
-		60,
-		map[string]client.DomainResourceSet{"library.example.com": {resource}},
-		nil,
-		false,
-		false,
-	)
-	defer resolver.Close()
-
-	ip := net.ParseIP("192.0.2.30")
-	resolver.setDNSCache("library.example.com", ip)
-	if err := resolver.IPPool.SetIPDomain(ip, "other.example.com", client.DomainResourceSet{{AppID: "other"}}); err != nil {
-		t.Fatal(err)
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("hedged lookup took %s", elapsed)
 	}
-
-	if _, gotIP, err := resolver.Resolve(context.Background(), "library.example.com"); err != nil {
-		t.Fatal(err)
-	} else if !gotIP.Equal(ip) {
-		t.Fatalf("Resolve() IP = %v, want %v", gotIP, ip)
-	}
-	domain, gotResource, found := resolver.IPPool.GetDomain(ip)
-	if !found || domain != "library.example.com" || len(gotResource) != 1 || gotResource[0].AppID != resource.AppID {
-		t.Fatalf("cached IP mapping = (%q, %#v, %v), want library resource", domain, gotResource, found)
+	select {
+	case <-udpCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("losing UDP lookup was not canceled")
 	}
 }
 
-func TestResolveFakeIPOverridesCachedAndServerIssuedAddresses(t *testing.T) {
-	resource := client.DomainResource{PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "library"}
-	resources := client.DomainResourceSet{resource}
-	resolver := NewResolver(
-		nil,
-		"",
-		"",
-		60,
-		map[string]client.DomainResourceSet{"library.example.com": resources},
-		map[string]net.IP{"library.example.com": net.ParseIP("203.0.113.10")},
-		false,
-		false,
-	)
-	defer resolver.Close()
+func TestLookupIPWithTCPFallbackKeepsFastUDP(t *testing.T) {
+	want := net.ParseIP("192.0.2.11")
+	tcpCalled := make(chan struct{}, 1)
+	udp := func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{want}, nil
+	}
+	tcp := func(context.Context, string, string) ([]net.IP, error) {
+		tcpCalled <- struct{}{}
+		return nil, errors.New("unexpected TCP lookup")
+	}
 
-	realIP := net.ParseIP("203.0.113.10")
-	resolver.setDNSCache("library.example.com", realIP)
-	if err := resolver.IPPool.SetIPDomain(realIP, "library.example.com", resources); err != nil {
-		t.Fatal(err)
+	ips, udpFailed, err := lookupIPWithTCPFallback(context.Background(), "fast.example", udp, tcp, time.Second)
+	if err != nil || udpFailed || len(ips) != 1 || !ips[0].Equal(want) {
+		t.Fatalf("lookup result = %v, udpFailed=%v, err=%v", ips, udpFailed, err)
 	}
-	fakeContext := context.WithValue(context.Background(), ContextKeyFakeIP, true)
-	_, fakeIP, err := resolver.Resolve(fakeContext, "library.example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := fakeIP.String(), "198.18.0.2"; got != want {
-		t.Fatalf("Resolve() fake IP = %s, want %s", got, want)
-	}
-	domain, mappedResources, found := resolver.IPPool.GetDomain(fakeIP)
-	if !found || domain != "library.example.com" || len(mappedResources) != 1 || mappedResources[0].AppID != resource.AppID {
-		t.Fatalf("fake IP mapping = (%q, %#v, %v)", domain, mappedResources, found)
+	select {
+	case <-tcpCalled:
+		t.Fatal("TCP lookup started for a fast UDP response")
+	default:
 	}
 }
 
-func TestZeroTTLDisablesTransientDNSCaching(t *testing.T) {
-	resolver := NewResolver(nil, "", "", 0, nil, nil, false, false)
-	defer resolver.Close()
-	ip := net.ParseIP("192.0.2.44")
-
-	resolver.setDNSCache("transient.example.com", ip)
-	if _, found := resolver.getDNSCache("transient.example.com"); found {
-		t.Fatal("zero-TTL transient DNS result was cached")
+func TestLookupIPWithTCPFallbackMarksUDPFailure(t *testing.T) {
+	want := net.ParseIP("192.0.2.12")
+	udp := func(context.Context, string, string) ([]net.IP, error) {
+		return nil, errors.New("UDP unavailable")
 	}
-	resolver.SetPermanentDNS("permanent.example.com", ip)
-	if got, found := resolver.getDNSCache("permanent.example.com"); !found || !got.Equal(ip) {
-		t.Fatalf("permanent DNS result = %v, %v; want %v, true", got, found, ip)
+	tcp := func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{want}, nil
+	}
+
+	ips, udpFailed, err := lookupIPWithTCPFallback(context.Background(), "failed.example", udp, tcp, time.Second)
+	if err != nil || !udpFailed || len(ips) != 1 || !ips[0].Equal(want) {
+		t.Fatalf("lookup result = %v, udpFailed=%v, err=%v", ips, udpFailed, err)
+	}
+}
+
+func failingNetResolver() *net.Resolver {
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("DNS unavailable")
+		},
 	}
 }

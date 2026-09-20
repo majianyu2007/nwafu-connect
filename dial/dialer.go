@@ -105,11 +105,19 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 	matchedResource := false
 	if res := ctx.Value(resolve.ContextKeyDomainResource); res != nil {
 		if resources, ok := res.(client.DomainResourceSet); ok {
-			_, matchedResource = resources.Match(port, resourceNetwork)
+			resource, matched := matchDomainResourceForTunnel(resources, resourceNetwork, port)
+			matchedResource = matched
+			if matched {
+				ctx = context.WithValue(ctx, resolve.ContextKeyDomainResource, resource)
+			}
 		}
 	}
 	if !matchedResource {
-		_, matchedResource = d.resourceIndex.Match(ip, resourceNetwork, port)
+		resource, matched := matchIPResourceForTunnel(d.resourceIndex, ip, resourceNetwork, port)
+		matchedResource = matched
+		if matched {
+			ctx = context.WithValue(ctx, resolve.ContextKeyIPResource, resource)
+		}
 	}
 
 	if d.alwaysUseVPN && !matchedResource {
@@ -183,4 +191,31 @@ func NewDialer(stack stack.Stack, resolver *resolve.Resolver, ipResources []clie
 		dialDirectHTTPProxy:  dialHttpProxy,
 		dialDirectSocksProxy: dialSocksProxy,
 	}
+}
+
+func matchDomainResourceForTunnel(resources []client.DomainResource, network string, port int) (client.DomainResource, bool) {
+	if network == "tcp" {
+		if resource, ok := client.MatchDomainResourceWhere(resources, network, port, func(resource client.DomainResource) bool {
+			return !resource.EnableTCPPrefL3
+		}); ok {
+			return resource, true
+		}
+	}
+	return client.MatchDomainResource(resources, network, port)
+}
+
+func matchesIPResource(index *ipresource.Index, target net.IP, network string, port int) bool {
+	_, ok := matchIPResourceForTunnel(index, target, network, port)
+	return ok
+}
+
+func matchIPResourceForTunnel(index *ipresource.Index, target net.IP, network string, port int) (client.IPResource, bool) {
+	if network == "tcp" {
+		if resource, ok := index.MatchWhere(target, network, port, func(resource client.IPResource) bool {
+			return !resource.EnableTCPPrefL3
+		}); ok {
+			return resource, true
+		}
+	}
+	return index.Match(target, network, port)
 }

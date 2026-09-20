@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"sync"
 
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
@@ -28,6 +30,9 @@ const MTU uint32 = 1400
 var errTunnelIO = errors.New("VPN tunnel I/O failed")
 
 type Stack struct {
+	ipResources         []client.IPResource
+	resourceIndexOnce   sync.Once
+	resourceCache       *resourceDecisionCache
 	endpoint            *Endpoint
 	tcpListenerEndpoint *TCPListenerEndpoint
 	tcpListenerStack    *gvisorstack.Stack
@@ -39,6 +44,7 @@ type Stack struct {
 }
 
 func (s *Stack) setIPResources(resources []client.IPResource) {
+	s.ipResources = resources
 	s.resourceIndex = ipresource.New(resources)
 }
 
@@ -160,31 +166,32 @@ func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
 		return fmt.Errorf("protocol %d not supported, skip", packet.Protocol())
 	}
 
-	domain, resourceSet, ok := s.ipPool.GetDomain(packet.DestinationIP())
+	domain, resources, ok := s.ipPool.GetDomain(packet.DestinationIP())
 	if ok {
 		log.DebugPrintf("IP to domain %s", domain)
-		for _, resource := range resourceSet {
-			if resource.Protocol == protocol || resource.Protocol == "all" {
-				if protocol == "icmp" {
-					return s.processIPV4ICMP(packet, packet.Payload())
-				}
-				if resource.PortMin <= port && port <= resource.PortMax {
-					if protocol == "tcp" {
-						return s.processIPV4TCP(packet, packet.Payload())
-					}
-					return s.processIPV4UDP(packet, packet.Payload())
-				}
+
+		if _, matched := client.MatchDomainResource(resources, protocol, port); matched {
+			if protocol == "tcp" {
+				_, tcpTunnelMatched := client.MatchDomainResourceWhere(resources, protocol, port, func(resource client.DomainResource) bool {
+					return !resource.EnableTCPPrefL3
+				})
+				return s.processIPV4TCP(packet, packet.Payload(), tcpTunnelMatched)
+			} else {
+				return s.processIPV4UDP(packet, packet.Payload())
 			}
 		}
 	}
 
-	if _, ok := s.resourceIndex.Match(packet.DestinationIP(), protocol, port); ok {
-		switch protocol {
-		case "icmp":
+	if _, matched := s.matchStaticResource(packet.DestinationIP(), protocol, port); matched {
+		if protocol == "icmp" {
 			return s.processIPV4ICMP(packet, packet.Payload())
-		case "tcp":
-			return s.processIPV4TCP(packet, packet.Payload())
-		default:
+		}
+		if protocol == "tcp" {
+			_, tcpTunnelMatched := s.resourceIndex.MatchWhere(packet.DestinationIP(), protocol, port, func(resource client.IPResource) bool {
+				return !resource.EnableTCPPrefL3
+			})
+			return s.processIPV4TCP(packet, packet.Payload(), tcpTunnelMatched)
+		} else {
 			return s.processIPV4UDP(packet, packet.Payload())
 		}
 	}
@@ -196,7 +203,7 @@ func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
 	}
 }
 
-func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPPacket) error {
+func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPPacket, useTCPTunnel bool) error {
 	log.DebugPrintf("receive tcp %s:%d -> %s:%d", packet.SourceIP(), tcpPacket.SourcePort(), packet.DestinationIP(), tcpPacket.DestinationPort())
 
 	if !packet.DestinationIP().IsGlobalUnicast() {
@@ -206,7 +213,7 @@ func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPP
 		return nil
 	}
 
-	if s.endpoint.client.CanUseTCPTunnel() {
+	if useTCPTunnel && s.endpoint.client.CanUseTCPTunnel() {
 		pkt := gvisorstack.NewPacketBuffer(gvisorstack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(packet),
 		})
@@ -318,4 +325,30 @@ func (s *Stack) doHijackUDPDns(ipHeader zctcpip.IPv4Packet, udpHeader zctcpip.UD
 	newUDPHeader.ResetChecksum(newPacket.PseudoSum())
 	newPacket.ResetChecksum()
 	_ = s.endpoint.Write(newPacket)
+}
+
+func (s *Stack) matchesStaticResource(destination net.IP, protocol string, port int) bool {
+	ip, ok := ipresource.IPv4Uint32(destination)
+	if !ok {
+		return false
+	}
+	s.resourceIndexOnce.Do(func() {
+		s.resourceIndex = ipresource.New(s.ipResources)
+		s.resourceCache = newResourceDecisionCache()
+	})
+	key := resourceDecisionKey{ip: ip, protocol: protocol, port: port}
+	if decision, ok := s.resourceCache.get(key); ok {
+		return decision
+	}
+	_, decision := s.resourceIndex.Match(destination, protocol, port)
+	s.resourceCache.set(key, decision)
+	return decision
+}
+
+func (s *Stack) matchStaticResource(destination net.IP, protocol string, port int) (client.IPResource, bool) {
+	s.resourceIndexOnce.Do(func() {
+		s.resourceIndex = ipresource.New(s.ipResources)
+		s.resourceCache = newResourceDecisionCache()
+	})
+	return s.resourceIndex.Match(destination, protocol, port)
 }

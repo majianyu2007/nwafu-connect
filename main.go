@@ -6,12 +6,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/majianyu2007/nwafu-connect/client/atrust/auth"
+	"github.com/majianyu2007/nwafu-connect/internal/keylog"
+	"github.com/majianyu2007/nwafu-connect/underlay"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/containers/winquit/pkg/winquit"
 	"github.com/majianyu2007/nwafu-connect/client"
@@ -78,7 +82,23 @@ func main() {
 		}
 	}
 
-	vpnClient = atrustclient.NewClient(conf.Username, conf.SID, conf.DeviceID, conf.SignKey)
+	underlayDialer, err := underlay.New(underlay.Options{InterfaceName: conf.BindInterface, AutoDetect: conf.AutoDetectInterface, DebugPCAPFile: conf.DebugPCAPFile, LocalDNSServer: conf.LocalDNSServer})
+	if err != nil {
+		fatalWithCleanup("Create underlay dialer: %v", err)
+	}
+	hook_func.RegisterTerminalFunc("CloseUnderlayDialer", func(context.Context) error { return underlayDialer.Close() })
+	tlsKeyLogWriter, err := keylog.Open(conf.DebugTLSLogFile)
+	if err != nil {
+		fatalWithCleanup("Create TLS key log: %v", err)
+	}
+	if tlsKeyLogWriter != nil {
+		hook_func.RegisterTerminalFunc("CloseTLSKeyLog", func(context.Context) error { return tlsKeyLogWriter.Close() })
+	}
+	loginMethod, err := auth.NewLoginMethod(auth.LoginMethodOptions{AuthType: conf.AuthType, Username: conf.Username, Password: conf.Password, Phone: conf.Phone, Domain: conf.LoginDomain, GraphCodeFile: conf.GraphCodeFile, QYWechatQRCodeFile: conf.QYWechatQRCodeFile, QYWechatQRCodeTerminal: conf.QYWechatQRCodeTerminal, QYWechatQRCodeBrowser: conf.QYWechatQRCodeBrowser})
+	if err != nil {
+		fatalWithCleanup("Configure aTrust login: %v", err)
+	}
+	vpnClient = atrustclient.NewClient(atrustclient.ClientOptions{Session: atrustclient.SessionOptions{Username: conf.Username, SID: conf.SID, DeviceID: conf.DeviceID, SignKey: conf.SignKey}, UnderlayDialer: underlayDialer, TLSKeyLogWriter: tlsKeyLogWriter})
 	if closer, ok := vpnClient.(interface{ Close() }); ok {
 		hook_func.RegisterTerminalFunc("CloseVPNClient", func(ctx context.Context) error {
 			closer.Close()
@@ -86,33 +106,18 @@ func main() {
 		})
 	}
 
+	var saveClientData func([]byte) error
+	if conf.ClientDataFile != "" {
+		saveClientData = func(data []byte) error { return writePrivateFile(conf.ClientDataFile, data) }
+	}
 	log.Println("VPN protocol: aTrust")
-	clientData, err = vpnClient.(*atrustclient.Client).Setup(
-		conf.ServerAddress,
-		conf.ServerPort,
-		conf.Username,
-		conf.Password,
-		conf.TOTPSecret,
-		conf.Phone,
-		conf.LoginDomain,
-		conf.AuthType,
-		conf.GraphCodeFile,
-		conf.QYWechatQRCodeFile,
-		conf.QYWechatQRCodeTerminal,
-		conf.QYWechatQRCodeBrowser,
-		clientData,
-		resourceData,
-		conf.UpdateBestNodesInterval,
-	)
+	clientData, err = vpnClient.(*atrustclient.Client).Setup(atrustclient.SetupOptions{
+		ServerAddress: conf.ServerAddress, ServerPort: conf.ServerPort, LoginMethod: loginMethod, TOTPSecret: conf.TOTPSecret,
+		SessionRefreshInterval: time.Duration(conf.SessionRefreshInterval) * time.Second, SaveClientData: saveClientData,
+		ClientData: clientData, ResourceData: resourceData, BestNodesRefreshInterval: time.Duration(conf.UpdateBestNodesInterval) * time.Second,
+	})
 	if err != nil {
 		fatalWithCleanup("VPN client setup error: %s", err)
-	}
-
-	if conf.ClientDataFile != "" {
-		if err := writePrivateFile(conf.ClientDataFile, clientData); err != nil {
-			fatalWithCleanup("Write client data file error: %s", err)
-		}
-		log.Printf("Client data saved to %s", conf.ClientDataFile)
 	}
 
 	log.Printf("VPN client started")
@@ -132,7 +137,7 @@ func main() {
 		log.Println("No domain resources")
 	}
 
-	resources, err := vpnClient.Resources()
+	resources, err := vpnClient.(*atrustclient.Client).Resources()
 	if err != nil {
 		log.Println("No resource metadata")
 	}
@@ -154,6 +159,7 @@ func main() {
 			fatalWithCleanup("Tun stack setup error, make sure you are root user: %s", err)
 		}
 
+		vpnStack = vpnTUNStack
 		if conf.AddRoute && ipSet != nil {
 			for _, prefix := range ipSet.Prefixes() {
 				log.Printf("Add route to %s", prefix.String())
@@ -329,7 +335,7 @@ func main() {
 			var forwardingErr error
 			switch portForwarding.NetworkType {
 			case "tcp":
-				_, forwardingErr = service.StartTCPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
+				_, forwardingErr = service.StartTCPForwarding(vpnDialer.Dial, portForwarding.BindAddress, portForwarding.RemoteAddress)
 			case "udp":
 				_, forwardingErr = service.StartUDPForwarding(vpnStack, portForwarding.BindAddress, portForwarding.RemoteAddress)
 			default:

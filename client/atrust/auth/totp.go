@@ -11,7 +11,7 @@ import (
 	"github.com/pquerna/otp/totp"
 )
 
-func (s *Session) completeTOTP(step authStep) (authStep, error) {
+func (s *Session) completeCampusTOTP(step authStep) (authStep, error) {
 	var code string
 	if s.totpSecret == "" {
 		var err error

@@ -184,3 +184,5 @@ Use `./nwafu-connect -h` for every flag. Important options:
 - For services, use `-config`; do not place passwords in command-line arguments, plist files, or systemd units.
 
 See [`docs/docker_en.md`](docs/docker_en.md) for containers and [`docs/service_en.md`](docs/service_en.md) for service installation.
+
+`session-refresh-interval`: aTrust session refresh interval in seconds (default `1800`; `0` disables). TOML: `session_refresh_interval`; environment: `NWAFU_CONNECT_SESSION_REFRESH_INTERVAL`. Refreshed cookies retain private file permissions.

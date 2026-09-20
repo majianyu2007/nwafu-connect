@@ -7,55 +7,64 @@ import (
 )
 
 type L3Conn struct {
-	l3Tunnel  *L3Tunnel
-	sendLock  sync.Mutex
-	recvLock  sync.Mutex
-	closed    chan struct{}
-	closeOnce sync.Once
+	l3Tunnel    *L3Tunnel
+	writePacket func([]byte) error
+	recvLock    sync.Mutex
+	closeCh     chan struct{}
+	closeOnce   sync.Once
 }
 
-func (c *L3Conn) Read(p []byte) (int, error) {
+// try best to read, if return err!=nil, please panic
+func (c *L3Conn) Read(p []byte) (n int, err error) {
 	c.recvLock.Lock()
 	defer c.recvLock.Unlock()
 	select {
 	case data := <-c.l3Tunnel.dataChan:
-		return copy(p, data), nil
-	case <-c.closed:
-		return 0, io.EOF
-	case <-c.l3Tunnel.closed:
+		if len(p) < len(data) {
+			return 0, io.ErrShortBuffer
+		}
+		n = copy(p, data)
+		return n, nil
+	case <-c.closeCh:
+		return 0, net.ErrClosed
+	case <-c.l3Tunnel.closeCh:
 		return 0, io.EOF
 	}
 }
 
-func (c *L3Conn) Write(p []byte) (int, error) {
-	c.sendLock.Lock()
-	defer c.sendLock.Unlock()
+// try best to write, if return err!=nil, please panic
+func (c *L3Conn) Write(p []byte) (n int, err error) {
 	select {
-	case <-c.closed:
+	case <-c.closeCh:
 		return 0, net.ErrClosed
-	case <-c.l3Tunnel.closed:
+	case <-c.l3Tunnel.closeCh:
 		return 0, net.ErrClosed
 	default:
 	}
-	if err := c.l3Tunnel.processIPV4(p); err != nil {
-		return 0, err
+	n = len(p)
+	if c.writePacket != nil {
+		err = c.writePacket(p)
+	} else {
+		err = c.l3Tunnel.processIPV4(p)
 	}
-	return len(p), nil
+	return n, err
 }
 
 func (c *L3Conn) Close() error {
-	c.closeOnce.Do(func() { close(c.closed) })
+	c.closeOnce.Do(func() { close(c.closeCh) })
 	return nil
 }
 
 func (t *L3Tunnel) NewL3Conn() (io.ReadWriteCloser, error) {
 	select {
-	case <-t.closed:
+	case <-t.closeCh:
 		return nil, net.ErrClosed
 	default:
 	}
-	return &L3Conn{
+	conn := &L3Conn{
 		l3Tunnel: t,
-		closed:   make(chan struct{}),
-	}, nil
+		closeCh:  make(chan struct{}),
+	}
+
+	return conn, nil
 }

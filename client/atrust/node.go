@@ -2,118 +2,125 @@ package atrust
 
 import (
 	"context"
-	"net"
+	"io"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/ping"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 const pingNum = 3
 
-type nodeCandidate struct {
-	address string
-	host    string
-	port    int
+type NodeGroup struct {
+	WAN []string
+	LAN []string
 }
 
-type nodeGroupResult struct {
-	group   string
-	address string
+type nodeGroupsProbeFunc func(map[string][]string) map[string]string
+
+func getBestNodes(nodeGroups map[string]NodeGroup, dialContext client.DialContextFunc, keyLogWriter io.Writer) map[string]string {
+	return selectBestNodes(nodeGroups, func(nodeGroups map[string][]string) map[string]string {
+		return getBestReachableNodes(nodeGroups, dialContext, keyLogWriter)
+	})
 }
 
-func getBestNodes(nodeGroups map[string][]string) map[string]string {
-	bestNodes := make(map[string]string, len(nodeGroups))
-	results := make(chan nodeGroupResult, len(nodeGroups))
+func selectBestNodes(nodeGroups map[string]NodeGroup, probe nodeGroupsProbeFunc) map[string]string {
+	wanNodeGroups := make(map[string][]string, len(nodeGroups))
 	for group, nodes := range nodeGroups {
-		go func(group string, nodes []string) {
-			results <- nodeGroupResult{group: group, address: getBestNode(group, nodes)}
-		}(group, nodes)
+		wanNodeGroups[group] = nodes.WAN
 	}
-	for range nodeGroups {
-		result := <-results
-		if result.address != "" {
-			bestNodes[result.group] = result.address
+	bestNodes := probe(wanNodeGroups)
+
+	fallbackNodeGroups := make(map[string][]string)
+	for group, nodes := range nodeGroups {
+		if bestNodes[group] == "" && len(nodes.LAN) > 0 {
+			fallbackNodeGroups[group] = nodes.LAN
 		}
+	}
+
+	if len(fallbackNodeGroups) == 0 {
+		return bestNodes
+	}
+	for group, node := range probe(fallbackNodeGroups) {
+		bestNodes[group] = node
 	}
 	return bestNodes
 }
 
-func getBestNode(group string, nodes []string) string {
-	candidates := make([]nodeCandidate, 0, len(nodes))
-	for _, node := range nodes {
-		host, portString, err := net.SplitHostPort(node)
-		if err != nil || host == "" {
-			log.Printf("Ignore invalid node address in group %s: %q", group, node)
-			continue
+func getBestReachableNodes(nodeGroups map[string][]string, dialContext client.DialContextFunc, keyLogWriter io.Writer) map[string]string {
+	bestNodes := make(map[string]string)
+	for group, nodes := range nodeGroups {
+		if len(nodes) > 0 {
+			var pingList []*ping.TCPing
+			var chList []<-chan struct{}
+
+			for _, node := range nodes {
+				parts := strings.Split(node, ":")
+				host := parts[0]
+				port, err := strconv.Atoi(parts[1])
+				if err != nil {
+					continue
+				}
+
+				tcping := ping.NewTCPing()
+				tcping.SetDialContext(dialContext)
+				tcping.SetKeyLogWriter(keyLogWriter)
+				target := ping.Target{
+					Protocol: ping.TCP,
+					Host:     host,
+					Port:     port,
+					Counter:  pingNum,
+					Interval: time.Duration(0.5 * float64(time.Second)),
+					Timeout:  time.Duration(1 * float64(time.Second)),
+				}
+				tcping.SetTarget(&target)
+
+				pingList = append(pingList, tcping)
+				ch := tcping.Start()
+				chList = append(chList, ch)
+			}
+
+			for _, ch := range chList {
+				<-ch
+			}
+
+			bestScore := time.Duration(0)
+			bestNode := ""
+			for i, tcping := range pingList {
+				result := tcping.Result()
+				score, reachable := nodeProbeScore(result)
+				if reachable && (bestScore == 0 || score < bestScore) {
+					bestNode = nodes[i]
+					bestScore = score
+				}
+			}
+
+			if bestNode != "" {
+				bestNodes[group] = bestNode
+				log.Printf("Best node in group %s: %s with quality score %d ms", group, bestNode, bestScore.Milliseconds())
+			}
 		}
-		port, err := strconv.Atoi(portString)
-		if err != nil || port < 1 || port > 65535 {
-			log.Printf("Ignore invalid node address in group %s: %q", group, node)
-			continue
-		}
-		candidates = append(candidates, nodeCandidate{address: node, host: host, port: port})
-	}
-	if len(candidates) == 0 {
-		log.Printf("No valid node in group %s", group)
-		return ""
-	}
-	if len(candidates) == 1 {
-		return candidates[0].address
 	}
 
-	pingList := make([]*ping.TCPing, 0, len(candidates))
-	doneList := make([]<-chan struct{}, 0, len(candidates))
-	for _, candidate := range candidates {
-		tcping := ping.NewTCPing()
-		tcping.SetTarget(&ping.Target{
-			Protocol: ping.TCP,
-			Host:     candidate.host,
-			Port:     candidate.port,
-			Counter:  pingNum,
-			Interval: 500 * time.Millisecond,
-			Timeout:  time.Second,
-		})
-		pingList = append(pingList, tcping)
-		doneList = append(doneList, tcping.Start())
-	}
-	for _, done := range doneList {
-		<-done
-	}
-
-	bestIndex := -1
-	bestSuccesses := 0
-	var bestLatency time.Duration
-	for index, tcping := range pingList {
-		result := tcping.Result()
-		if result.SuccessCounter == 0 {
-			continue
-		}
-		latency := result.Avg()
-		if result.SuccessCounter > bestSuccesses ||
-			(result.SuccessCounter == bestSuccesses && (bestIndex < 0 || latency < bestLatency)) {
-			bestIndex = index
-			bestSuccesses = result.SuccessCounter
-			bestLatency = latency
-		}
-	}
-	if bestIndex < 0 {
-		log.Printf("No reachable node in group %s, using the first valid node", group)
-		return candidates[0].address
-	}
-	bestNode := candidates[bestIndex].address
-	log.Printf("Best node in group %s: %s with %d/%d probes and latency %d ms", group, bestNode, bestSuccesses, pingNum, bestLatency.Milliseconds())
-	return bestNode
+	return bestNodes
 }
 
-func (c *Client) updateBestNodes(ctx context.Context, updateBestNodesInterval int) {
-	const maxIntervalSeconds = int64((1<<63 - 1) / int64(time.Second))
-	if updateBestNodesInterval <= 0 || int64(updateBestNodesInterval) > maxIntervalSeconds {
-		log.Printf("Ignore invalid best-node update interval: %d seconds", updateBestNodesInterval)
-		return
+func nodeProbeScore(result *ping.Result) (time.Duration, bool) {
+	if result == nil || result.SuccessCounter == 0 {
+		return 0, false
 	}
-	ticker := time.NewTicker(time.Duration(updateBestNodesInterval) * time.Second)
+	penalty := time.Second
+	if result.Target != nil && result.Target.Timeout > 0 {
+		penalty = result.Target.Timeout
+	}
+	return result.Avg() + time.Duration(result.Failed())*penalty, true
+}
+
+func (c *Client) updateBestNodes(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -123,9 +130,16 @@ func (c *Client) updateBestNodes(ctx context.Context, updateBestNodesInterval in
 		case <-ticker.C:
 		}
 
-		bestNodes := getBestNodes(c.NodeGroups)
+		bestNodes := getBestNodes(c.NodeGroups, c.underlayDialer.DialContext, c.tlsKeyLogWriter)
 		c.BestNodesRWMutex.Lock()
 		c.BestNodes = bestNodes
 		c.BestNodesRWMutex.Unlock()
+
+		c.l3TunnelMu.Lock()
+		tunnel := c.l3Tunnel
+		c.l3TunnelMu.Unlock()
+		if tunnel != nil {
+			tunnel.evictStaleConns(bestNodes, c.MajorNodeGroup)
+		}
 	}
 }

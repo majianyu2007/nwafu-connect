@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
@@ -16,17 +16,16 @@ func (s *Session) completeCustomSMS() (authStep, error) {
 		return authStep{}, err
 	}
 
-	code, err := readVerificationCode(
-		"输入短信验证码",
-		"请输入学校网关发送到已登记手机的验证码。",
-		true,
-	)
-	if err != nil {
-		return authStep{}, err
+	challenge := authchallenge.CodeChallenge{
+		Kind:                 authchallenge.CodeSMS,
+		Message:              "Please enter the SMS verification code:",
+		CanSkipSecondaryAuth: true,
 	}
-
-	code, skipSecondaryAuth := strings.CutPrefix(code, "$")
-	return s.customSMSCheckCode(code, skipSecondaryAuth)
+	response, err := s.challengeHandler.HandleCodeChallenge(challenge)
+	if err != nil {
+		return authStep{}, fmt.Errorf("complete custom SMS challenge: %w", err)
+	}
+	return s.customSMSCheckCode(response.Code, response.SkipSecondaryAuth)
 }
 
 func (s *Session) sendCustomSMS() error {
