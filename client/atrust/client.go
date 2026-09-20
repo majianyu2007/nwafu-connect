@@ -51,9 +51,9 @@ type SetupOptions struct {
 }
 
 type Client struct {
- sessionMu sync.RWMutex
- sessionErr error
- refreshDone chan struct{}
+	sessionMu    sync.RWMutex
+	sessionErr   error
+	refreshDone  chan struct{}
 	Username     string
 	SID          string
 	DeviceID     string
@@ -61,7 +61,7 @@ type Client struct {
 	SignKey      string
 
 	serverAddress   string
-	resources []client.Resource
+	resources       []client.Resource
 	ipResources     []client.IPResource
 	resourceIndex   *ipresource.Index
 	domainResources client.DomainResources

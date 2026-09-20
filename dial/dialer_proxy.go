@@ -2,12 +2,12 @@ package dial
 
 import (
 	"bufio"
- "bytes"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -88,8 +88,10 @@ func (d *Dialer) dialDirectWithHTTPProxy(ctx context.Context, usedAddr string) (
 	if err := request.Write(connection); err != nil {
 		return nil, fmt.Errorf("write HTTP proxy CONNECT request: %w", err)
 	}
- bufferedConn, err := readHTTPProxyConnectResponse(connection)
- if err != nil { return nil, err }
+	bufferedConn, err := readHTTPProxyConnectResponse(connection)
+	if err != nil {
+		return nil, err
+	}
 
 	if !stopCancellation() {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -101,7 +103,7 @@ func (d *Dialer) dialDirectWithHTTPProxy(ctx context.Context, usedAddr string) (
 	}
 
 	keepConnection = true
- return bufferedConn, nil
+	return bufferedConn, nil
 }
 
 type bufferedProxyConn struct {
@@ -202,6 +204,7 @@ func (d *Dialer) dialDirectWithSocksProxy(ctx context.Context, network, usedAddr
 }
 
 const maxHTTPProxyResponseHeader = 64 << 10
+
 func readHTTPProxyConnectResponse(conn net.Conn) (net.Conn, error) {
 	reader := bufio.NewReader(conn)
 	var header bytes.Buffer
@@ -231,4 +234,3 @@ func readHTTPProxyConnectResponse(conn net.Conn) (net.Conn, error) {
 
 	return &bufferedProxyConn{Conn: conn, reader: reader}, nil
 }
-

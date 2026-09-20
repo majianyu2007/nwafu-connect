@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/knadh/koanf/parsers/toml/v2"
@@ -26,7 +26,7 @@ const envPrefix = "NWAFU_CONNECT_"
 
 var (
 	nwafuConnectVersion = "1.4.1"
-	CommitID          string
+	CommitID            string
 )
 
 type startupOptions struct {
@@ -124,7 +124,7 @@ func newFlagSet(defaults configs.Config) *pflag.FlagSet {
 	flags.String("sign-key", defaults.SignKey, "aTrust Sign Key")
 	flags.String("resource-file", defaults.ResourceFile, "aTrust Resource File")
 	flags.Int("session-refresh-interval", defaults.SessionRefreshInterval, "aTrust session refresh interval in seconds (0 disables)")
- flags.Int("update-best-nodes-interval", defaults.UpdateBestNodesInterval, "Interval to update best nodes in seconds")
+	flags.Int("update-best-nodes-interval", defaults.UpdateBestNodesInterval, "Interval to update best nodes in seconds")
 
 	for _, spec := range collectionSpecs {
 		flags.String(spec.FlagName, "", spec.Help)
@@ -381,11 +381,15 @@ func applyCollectionValues(k *koanf.Koanf, values collectionValues) error {
 	udp := values[collectionUDPPortForwarding]
 	if tcp.Set || udp.Set {
 		var previous configs.Config
-  if err := k.Unmarshal("", &previous); err != nil { return err }
-  var entries []configs.SinglePortForwarding
-  for _, entry := range previous.PortForwardingList {
-   if (entry.NetworkType == "tcp" && !tcp.Set) || (entry.NetworkType == "udp" && !udp.Set) { entries = append(entries, entry) }
-  }
+		if err := k.Unmarshal("", &previous); err != nil {
+			return err
+		}
+		var entries []configs.SinglePortForwarding
+		for _, entry := range previous.PortForwardingList {
+			if (entry.NetworkType == "tcp" && !tcp.Set) || (entry.NetworkType == "udp" && !udp.Set) {
+				entries = append(entries, entry)
+			}
+		}
 		for _, item := range []struct {
 			value   collectionValue
 			network string
@@ -459,12 +463,13 @@ func parseProxyDomains(value string) []string {
 	return strings.Split(value, ",")
 }
 
-
 func validateConfig(cfg configs.Config) error {
 	if cfg.Protocol != "atrust" {
 		return fmt.Errorf("unsupported VPN protocol: %s", cfg.Protocol)
 	}
-	if strings.TrimSpace(cfg.ServerAddress) == "" { return errors.New("NWAFU Connect: server address is empty") }
+	if strings.TrimSpace(cfg.ServerAddress) == "" {
+		return errors.New("NWAFU Connect: server address is empty")
+	}
 	if cfg.ServerPort < 1 || cfg.ServerPort > 65535 {
 		return fmt.Errorf("invalid VPN server port: %d", cfg.ServerPort)
 	}
@@ -497,11 +502,11 @@ func validateConnectConfig(cfg configs.Config) error {
 	case "auth/psw":
 		primaryCredentialsPresent = cfg.Username != "" && cfg.Password != ""
 	case "auth/qywechat", "":
- return nil
+		return nil
 	case "auth/smsCheckCode":
 		primaryCredentialsPresent = cfg.Phone != ""
 	default:
- return fmt.Errorf("unsupported auth type: %s", cfg.AuthType)
+		return fmt.Errorf("unsupported auth type: %s", cfg.AuthType)
 	}
 	debugCredentialsPresent := cfg.SID != "" && cfg.DeviceID != "" && cfg.ResourceFile != ""
 	if !primaryCredentialsPresent && !debugCredentialsPresent {
@@ -600,4 +605,8 @@ func splitForwardingAddresses(value string) (string, string, bool) {
 	return "", "", false
 }
 
-func initializeConfig() { if code := initialize(os.Args[1:]); code >= 0 { os.Exit(code) } }
+func initializeConfig() {
+	if code := initialize(os.Args[1:]); code >= 0 {
+		os.Exit(code)
+	}
+}

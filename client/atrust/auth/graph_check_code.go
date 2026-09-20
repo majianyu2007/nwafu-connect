@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
- "strings"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"strings"
 
 	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 )
@@ -164,4 +164,3 @@ func parseGraphCheckCodeTupleArray(raw string) (graphCheckCodePayload, bool) {
 	}
 	return graphCheckCodePayload{Coordinates: coordinates}, true
 }
-

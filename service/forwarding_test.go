@@ -49,7 +49,13 @@ func TestTCPForwardingDialFailureClosesClientWithoutPanicking(t *testing.T) {
 	clientConnection, forwardingConnection := net.Pipe()
 	done := make(chan struct{})
 	go func() {
-		handleTCPForwardingRequest(func(ctx context.Context, network, addr string) (net.Conn, error) { target, err := net.ResolveTCPAddr(network, addr); if err != nil { return nil, err }; return vpnStack.DialTCP(ctx, target) }, forwardingConnection, "192.0.2.10:443")
+		handleTCPForwardingRequest(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			target, err := net.ResolveTCPAddr(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return vpnStack.DialTCP(ctx, target)
+		}, forwardingConnection, "192.0.2.10:443")
 		close(done)
 	}()
 	if err := clientConnection.SetReadDeadline(time.Now().Add(time.Second)); err != nil {

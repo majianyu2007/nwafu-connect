@@ -1,6 +1,9 @@
 package atrust
 
-import ("testing"; "github.com/majianyu2007/nwafu-connect/client")
+import (
+	"github.com/majianyu2007/nwafu-connect/client"
+	"testing"
+)
 
 func TestParseResourceSkipsEmptyHosts(t *testing.T) {
 	vpnClient := &Client{}

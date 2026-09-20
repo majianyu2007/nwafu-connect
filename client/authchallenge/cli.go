@@ -80,7 +80,9 @@ func (h *CLIHandler) HandleTextCaptcha(challenge TextCaptchaChallenge) (TextCapt
 	if err := os.WriteFile(challenge.OutputPath, challenge.Image, 0600); err != nil {
 		return TextCaptchaResponse{}, fmt.Errorf("write captcha image: %w", err)
 	}
-	if err := os.Chmod(challenge.OutputPath, 0600); err != nil { return TextCaptchaResponse{}, err }
+	if err := os.Chmod(challenge.OutputPath, 0600); err != nil {
+		return TextCaptchaResponse{}, err
+	}
 	code, err := h.readLine(challenge.Message)
 	if err != nil {
 		return TextCaptchaResponse{}, err
@@ -102,7 +104,9 @@ func (h *CLIHandler) HandleClickCaptcha(challenge ClickCaptchaChallenge) (ClickC
 	if err := os.WriteFile(challenge.OutputPath, challenge.Image, 0600); err != nil {
 		return ClickCaptchaResponse{}, fmt.Errorf("write captcha image: %w", err)
 	}
-	if err := os.Chmod(challenge.OutputPath, 0600); err != nil { return ClickCaptchaResponse{}, err }
+	if err := os.Chmod(challenge.OutputPath, 0600); err != nil {
+		return ClickCaptchaResponse{}, err
+	}
 	raw, err := h.readLine(challenge.Message)
 	if err != nil {
 		return ClickCaptchaResponse{}, err

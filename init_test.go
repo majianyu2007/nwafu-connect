@@ -118,11 +118,17 @@ server_address = "vpn.example.com"
 }
 
 func TestCampusDefaultsAndProtocolRestriction(t *testing.T) {
- options, _, err := loadStartupOptions(nil, func() []string { return nil })
- if err != nil { t.Fatal(err) }
- c := options.Config
- if c.ServerAddress != "vpn.nwafu.edu.cn" || c.AuthType != "auth/psw" || c.LoginDomain != "LDAP" || c.SocksBind != "127.0.0.1:1080" { t.Fatalf("campus defaults changed: %+v", c) }
- if _, _, err := loadStartupOptions([]string{"--protocol", "easyconnect"}, func() []string { return nil }); err == nil { t.Fatal("EasyConnect must remain unsupported") }
+	options, _, err := loadStartupOptions(nil, func() []string { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := options.Config
+	if c.ServerAddress != "vpn.nwafu.edu.cn" || c.AuthType != "auth/psw" || c.LoginDomain != "LDAP" || c.SocksBind != "127.0.0.1:1080" {
+		t.Fatalf("campus defaults changed: %+v", c)
+	}
+	if _, _, err := loadStartupOptions([]string{"--protocol", "easyconnect"}, func() []string { return nil }); err == nil {
+		t.Fatal("EasyConnect must remain unsupported")
+	}
 }
 
 func TestCollectionCLIReplacesConfig(t *testing.T) {
@@ -270,7 +276,7 @@ func TestEnvironmentCollectionsUseCLISyntax(t *testing.T) {
 	}
 }
 
-func TestCLICollectionsOverrideEnvironmentCollections(t *testing.T) {
+func TestCLIForwardingOverridesOnlySpecifiedProtocol(t *testing.T) {
 	options, _, err := loadStartupOptions([]string{
 		"--tcp-port-forwarding", "127.0.0.1:4-10.0.0.4:4",
 	}, func() []string {
@@ -282,7 +288,7 @@ func TestCLICollectionsOverrideEnvironmentCollections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := options.Config.PortForwardingList; len(got) != 1 || got[0].RemoteAddress != "10.0.0.4:4" {
+	if got := options.Config.PortForwardingList; len(got) != 2 || got[0].NetworkType != "udp" || got[0].RemoteAddress != "10.0.0.3:3" || got[1].NetworkType != "tcp" || got[1].RemoteAddress != "10.0.0.4:4" {
 		t.Fatalf("PortForwardingList = %+v", got)
 	}
 }

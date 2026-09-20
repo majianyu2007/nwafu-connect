@@ -7,13 +7,15 @@ import (
 	"io"
 	"net"
 
+	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
 	"github.com/majianyu2007/nwafu-connect/log"
-	"github.com/majianyu2007/nwafu-connect/client"
 )
 
 func StartTCPForwarding(dialContext client.DialContextFunc, bindAddress, remoteAddress string) (string, error) {
- if _, _, err := net.SplitHostPort(remoteAddress); err != nil { return "", fmt.Errorf("invalid TCP forwarding destination %q: %w", remoteAddress, err) }
+	if _, _, err := net.SplitHostPort(remoteAddress); err != nil {
+		return "", fmt.Errorf("invalid TCP forwarding destination %q: %w", remoteAddress, err)
+	}
 
 	listener, err := net.Listen("tcp", bindAddress)
 	if err != nil {

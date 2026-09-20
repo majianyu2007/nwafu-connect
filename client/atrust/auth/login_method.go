@@ -3,17 +3,17 @@ package auth
 import "fmt"
 
 type LoginMethodOptions struct {
- QYWechatQRCodeFile string
- QYWechatQRCodeTerminal bool
- QYWechatQRCodeBrowser bool
-	AuthType      string
-	Username      string
-	Password      string
-	Phone         string
-	Domain        string
-	GraphCodeFile string
-	CASTicket     string
-	OAuth2Code    string
+	QYWechatQRCodeFile     string
+	QYWechatQRCodeTerminal bool
+	QYWechatQRCodeBrowser  bool
+	AuthType               string
+	Username               string
+	Password               string
+	Phone                  string
+	Domain                 string
+	GraphCodeFile          string
+	CASTicket              string
+	OAuth2Code             string
 }
 
 func NewLoginMethod(options LoginMethodOptions) (LoginMethod, error) {
@@ -28,8 +28,8 @@ func NewLoginMethod(options LoginMethodOptions) (LoginMethod, error) {
 	}
 
 	switch authType {
- case "auth/qywechat":
- return QYWechatLogin{Domain: options.Domain, QRCodeFile: options.QYWechatQRCodeFile, PrintQRCode: options.QYWechatQRCodeTerminal, OpenBrowser: options.QYWechatQRCodeBrowser}, nil
+	case "auth/qywechat":
+		return QYWechatLogin{Domain: options.Domain, QRCodeFile: options.QYWechatQRCodeFile, PrintQRCode: options.QYWechatQRCodeTerminal, OpenBrowser: options.QYWechatQRCodeBrowser}, nil
 	case "auth/psw":
 		return PasswordLogin{
 			Username:      options.Username,

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"crypto/tls"
 	"time"
 
 	"github.com/majianyu2007/nwafu-connect/client"
@@ -121,11 +121,11 @@ func NewSession(server string, tlsKeyLogWriter io.Writer, dialContext ...client.
 	client := &http.Client{Transport: transport, Jar: jar, Timeout: 20 * time.Second}
 
 	return &Session{
-		client:   client,
-		baseHost: server,
-		baseURL:  "https://" + server,
-		rid:      base64.StdEncoding.EncodeToString([]byte(server)),
-		response: make(map[string]json.RawMessage),
+		client:           client,
+		baseHost:         server,
+		baseURL:          "https://" + server,
+		rid:              base64.StdEncoding.EncodeToString([]byte(server)),
+		response:         make(map[string]json.RawMessage),
 		challengeHandler: newCampusChallengeHandler(),
 	}
 }

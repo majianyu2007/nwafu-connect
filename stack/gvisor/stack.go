@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
- "net"
- "sync"
+	"net"
+	"sync"
 
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
@@ -22,8 +22,8 @@ import (
 )
 
 type Stack struct {
- ipMu sync.Mutex
- ip tcpip.Address
+	ipMu        sync.Mutex
+	ip          tcpip.Address
 	gvisorStack *stack.Stack
 	resolve     zcdns.LocalServer
 	ipPool      *ippool.IPPool[client.DomainResourceSet]
@@ -160,7 +160,7 @@ func NewStack(vpnClient client.Client) (*Stack, error) {
 	}
 
 	addr := tcpip.AddrFromSlice(ip)
- s.ip = addr
+	s.ip = addr
 	protoAddr := tcpip.ProtocolAddress{
 		AddressWithPrefix: tcpip.AddressWithPrefix{
 			Address:   addr,

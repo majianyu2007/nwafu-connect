@@ -1864,6 +1864,7 @@ func makeTCPPacketWithSeq(flags uint16, sequence, acknowledgment uint32) []byte 
 	tcpPacket := zctcpip.TCPPacket(packet.Payload())
 	binary.BigEndian.PutUint32(tcpPacket[4:8], sequence)
 	binary.BigEndian.PutUint32(tcpPacket[8:12], acknowledgment)
+	tcpPacket[12] = 5 << 4
 	tcpPacket[13] = byte(flags)
 	return packet
 }

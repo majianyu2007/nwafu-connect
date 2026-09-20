@@ -56,7 +56,11 @@ func (c *L3Conn) Close() error {
 }
 
 func (t *L3Tunnel) NewL3Conn() (io.ReadWriteCloser, error) {
- select { case <-t.closeCh: return nil, net.ErrClosed; default: }
+	select {
+	case <-t.closeCh:
+		return nil, net.ErrClosed
+	default:
+	}
 	conn := &L3Conn{
 		l3Tunnel: t,
 		closeCh:  make(chan struct{}),

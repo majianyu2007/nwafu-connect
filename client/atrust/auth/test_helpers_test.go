@@ -2,7 +2,7 @@ package auth
 
 import (
 	"net/http"
- "net/http/cookiejar"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"

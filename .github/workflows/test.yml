@@ -17,10 +17,11 @@ jobs:
           cache: true
       - name: Install desktop build dependencies
         run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev libayatana-appindicator3-dev
-      - name: Format and resolve modules
+      - name: Check formatting and modules
         run: |
-          gofmt -w $(git ls-files '*.go')
+          test -z "$(gofmt -l $(git ls-files '*.go'))"
           go mod tidy
+          git diff --exit-code -- go.mod go.sum
       - name: Unit tests
         run: go test -timeout 120s ./...
       - name: Static analysis
@@ -29,15 +30,6 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go build -o /tmp/nwafu-connect .
-      - name: Save formatting and dependency diff
-        if: always()
-        run: |
-          git diff > /tmp/format-and-modules.patch
-          cp "$(go env GOROOT)/bin/gofmt" /tmp/gofmt
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: format-and-modules
-          path: |
-            /tmp/format-and-modules.patch
-            /tmp/gofmt
+      - name: Discover public campus authentication methods
+        continue-on-error: true
+        run: timeout 35s /tmp/nwafu-connect -auth-info

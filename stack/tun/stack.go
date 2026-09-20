@@ -3,12 +3,12 @@
 package tun
 
 import (
- "net"
- "sync"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"sync"
 
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
@@ -30,9 +30,9 @@ const MTU uint32 = 1400
 var errTunnelIO = errors.New("VPN tunnel I/O failed")
 
 type Stack struct {
- ipResources []client.IPResource
- resourceIndexOnce sync.Once
- resourceCache *resourceDecisionCache
+	ipResources         []client.IPResource
+	resourceIndexOnce   sync.Once
+	resourceCache       *resourceDecisionCache
 	endpoint            *Endpoint
 	tcpListenerEndpoint *TCPListenerEndpoint
 	tcpListenerStack    *gvisorstack.Stack
@@ -45,7 +45,7 @@ type Stack struct {
 
 func (s *Stack) setIPResources(resources []client.IPResource) {
 	s.ipResources = resources
- s.resourceIndex = ipresource.New(resources)
+	s.resourceIndex = ipresource.New(resources)
 }
 
 func (s *Stack) SetupResolve(r zcdns.LocalServer) {
@@ -352,4 +352,3 @@ func (s *Stack) matchStaticResource(destination net.IP, protocol string, port in
 	})
 	return s.resourceIndex.Match(destination, protocol, port)
 }
-

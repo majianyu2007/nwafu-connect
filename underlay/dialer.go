@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	tun "github.com/mythologyli/sing-tun"
 	"github.com/majianyu2007/nwafu-connect/internal/platformdialer"
 	"github.com/majianyu2007/nwafu-connect/log"
+	tun "github.com/mythologyli/sing-tun"
 	"github.com/sagernet/sing/common/logger"
 )
 

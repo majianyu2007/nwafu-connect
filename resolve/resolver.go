@@ -3,8 +3,8 @@ package resolve
 import (
 	"context"
 	"errors"
- "fmt"
- "math"
+	"fmt"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -19,7 +19,7 @@ import (
 )
 
 type Resolver struct {
- isolatedResolver *dohResolver
+	isolatedResolver  *dohResolver
 	remoteUDPResolver *net.Resolver
 	remoteTCPResolver *net.Resolver
 	secondaryResolver *net.Resolver
@@ -101,9 +101,11 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 	host = normalizeHostname(host)
 	defer func() {
 		if resErr == nil {
-   if resources, ok := resCtx.Value(ContextKeyDomainResource).([]client.DomainResource); ok && r.IPPool != nil {
-    if err := r.IPPool.SetIPDomain(resIP, host, resources); err != nil { log.DebugPrintf("Set IP err: %s", err) }
-   }
+			if resources, ok := resCtx.Value(ContextKeyDomainResource).([]client.DomainResource); ok && r.IPPool != nil {
+				if err := r.IPPool.SetIPDomain(resIP, host, resources); err != nil {
+					log.DebugPrintf("Set IP err: %s", err)
+				}
+			}
 			resCtx = context.WithValue(resCtx, ContextKeyResolveHost, host)
 		}
 	}()
@@ -116,10 +118,10 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 		log.DebugPrintf("Domain resource found: %s", domain)
 	}
 
- if fake, _ := ctx.Value(ContextKeyFakeIP).(bool); fake && domainResourceFound {
-  ip, err := r.IPPool.GenerateIP(host, domainResources)
-  return ctx, ip, err
- }
+	if fake, _ := ctx.Value(ContextKeyFakeIP).(bool); fake && domainResourceFound {
+		ip, err := r.IPPool.GenerateIP(host, domainResources)
+		return ctx, ip, err
+	}
 
 	if cachedIP, found := r.getDNSCache(host); found {
 		log.Printf("%s -> %s", host, cachedIP.String())
@@ -349,8 +351,15 @@ func (r *Resolver) RemoteTCPResolver() (*net.Resolver, error) {
 func (r *Resolver) ResolveWithSecondaryDNS(ctx context.Context, host string) (context.Context, net.IP, error) {
 	host = normalizeHostname(host)
 	ip, err := r.resolveCoordinated(ctx, host, func(lookupCtx context.Context) (net.IP, error) {
- if ip, found := r.getDNSCache(host); found { return ip, nil }; ip, err := r.lookupSecondary(lookupCtx, host); if err == nil { r.setDNSCache(host, ip) }; return ip, err
- })
+		if ip, found := r.getDNSCache(host); found {
+			return ip, nil
+		}
+		ip, err := r.lookupSecondary(lookupCtx, host)
+		if err == nil {
+			r.setDNSCache(host, ip)
+		}
+		return ip, err
+	})
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -373,15 +382,23 @@ func (r *Resolver) Close() {
 			r.timer = nil
 		}
 		r.tcpLock.Unlock()
- if r.isolatedResolver != nil { r.isolatedResolver.client.CloseIdleConnections() }
+		if r.isolatedResolver != nil {
+			r.isolatedResolver.client.CloseIdleConnections()
+		}
 	})
 }
 
 func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, ttl uint64, domainResources client.DomainResources, dnsResource map[string][]net.IP, useRemoteDNS bool, isolatedDNS ...bool) *Resolver {
- ttl = min(ttl, uint64(math.MaxUint32))
- normalizedDNS := make(map[string][]net.IP, len(dnsResource))
- for host, ips := range dnsResource { for _, ip := range ips { if ip != nil { normalizedDNS[normalizeHostname(host)] = append(normalizedDNS[normalizeHostname(host)], append(net.IP(nil), ip...)) } } }
- dnsResource = normalizedDNS
+	ttl = min(ttl, uint64(math.MaxUint32))
+	normalizedDNS := make(map[string][]net.IP, len(dnsResource))
+	for host, ips := range dnsResource {
+		for _, ip := range ips {
+			if ip != nil {
+				normalizedDNS[normalizeHostname(host)] = append(normalizedDNS[normalizeHostname(host)], append(net.IP(nil), ip...))
+			}
+		}
+	}
+	dnsResource = normalizedDNS
 
 	//domainSuffixTree := domainsuffixtrie.NewDomainSuffixTrie[bool]()
 	//for domain := range domainResource {
@@ -392,8 +409,10 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 		remoteUDPResolver: &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				if stack == nil || net.ParseIP(remoteDNSServer) == nil { return nil, errors.New("remote DNS stack or address is unavailable") }
- return stack.DialUDP(ctx, &net.UDPAddr{
+				if stack == nil || net.ParseIP(remoteDNSServer) == nil {
+					return nil, errors.New("remote DNS stack or address is unavailable")
+				}
+				return stack.DialUDP(ctx, &net.UDPAddr{
 					IP:   net.ParseIP(remoteDNSServer),
 					Port: 53,
 				})
@@ -402,8 +421,10 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 		remoteTCPResolver: &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				if stack == nil || net.ParseIP(remoteDNSServer) == nil { return nil, errors.New("remote DNS stack or address is unavailable") }
- return stack.DialTCP(ctx, &net.TCPAddr{
+				if stack == nil || net.ParseIP(remoteDNSServer) == nil {
+					return nil, errors.New("remote DNS stack or address is unavailable")
+				}
+				return stack.DialTCP(ctx, &net.TCPAddr{
 					IP:   net.ParseIP(remoteDNSServer),
 					Port: 53,
 				})
@@ -416,7 +437,9 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 		useRemoteDNS: useRemoteDNS,
 	}
 
-	if len(isolatedDNS) > 0 && isolatedDNS[0] { resolver.isolatedResolver = newDoHResolver() }
+	if len(isolatedDNS) > 0 && isolatedDNS[0] {
+		resolver.isolatedResolver = newDoHResolver()
+	}
 	if secondaryDNSServer != "" {
 		resolver.secondaryResolver = &net.Resolver{
 			PreferGo: true,

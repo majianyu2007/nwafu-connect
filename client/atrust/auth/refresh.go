@@ -18,7 +18,9 @@ func (s *Session) Restore(deviceID, sid string, cookies []Cookie) {
 	env, _ := json.Marshal(map[string]string{"deviceId": deviceID})
 	s.env = base64.StdEncoding.EncodeToString(env)
 	for _, cookie := range cookies {
- if cookie.Host != s.baseHost || cookie.Scheme != "https" || cookie.Name == "" { continue }
+		if cookie.Host != s.baseHost || cookie.Scheme != "https" || cookie.Name == "" {
+			continue
+		}
 		s.client.Jar.SetCookies(&url.URL{Host: cookie.Host, Scheme: cookie.Scheme}, []*http.Cookie{{Name: cookie.Name, Value: cookie.Value, Path: "/"}})
 	}
 	if sid != "" {
@@ -29,7 +31,7 @@ func (s *Session) Restore(deviceID, sid string, cookies []Cookie) {
 // Snapshot must be taken after the last HTTP response, which may replace sid.
 func (s *Session) Snapshot() (LoginResult, error) {
 	snapshot := s.loginResult("")
- sid, cookies := snapshot.SID, snapshot.Cookies
+	sid, cookies := snapshot.SID, snapshot.Cookies
 	if sid == "" {
 		return LoginResult{}, ErrSessionInvalid
 	}

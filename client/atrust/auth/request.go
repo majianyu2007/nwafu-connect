@@ -17,7 +17,6 @@ import (
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
-
 func readAuthHTTPResponse(response *http.Response, operation string, limit int64) ([]byte, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("%s response limit must be positive", operation)
@@ -75,8 +74,9 @@ func (s *Session) authConfigContext(ctx context.Context, mod, needTicket, refres
 	}
 	if needTicket {
 		params.Set("needTicket", "1")
- } else if refresh { params.Set("needTicket", "0")
- }
+	} else if refresh {
+		params.Set("needTicket", "0")
+	}
 
 	u := s.baseURL + "/passport/v1/public/authConfig"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"?"+params.Encode(), nil)
@@ -96,19 +96,21 @@ func (s *Session) authConfigContext(ctx context.Context, mod, needTicket, refres
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden { return 0, nil, fmt.Errorf("%w: authConfig HTTP %d", ErrSessionInvalid, resp.StatusCode) }
- body, err := readAuthHTTPResponse(resp, "auth config", 8<<20)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return 0, nil, fmt.Errorf("%w: authConfig HTTP %d", ErrSessionInvalid, resp.StatusCode)
+	}
+	body, err := readAuthHTTPResponse(resp, "auth config", 8<<20)
 	if err != nil {
 		return 0, nil, err
 	}
 	log.DebugPrintf("Received auth config: %s", string(body))
 
 	var re struct {
-		Code    *int    `json:"code"`
+		Code    *int   `json:"code"`
 		Message string `json:"message"`
 		Data    struct {
 			AuthServerInfoList []AuthInfo `json:"authServerInfoList"`
-			IsLogin            *int        `json:"isLogin"`
+			IsLogin            *int       `json:"isLogin"`
 			CSRF               string     `json:"csrfToken"`
 			Security           struct {
 				CSRF string `json:"csrfToken"`
@@ -122,12 +124,18 @@ func (s *Session) authConfigContext(ctx context.Context, mod, needTicket, refres
 	if err := json.Unmarshal(body, &re); err != nil {
 		return 0, nil, fmt.Errorf("decode auth config response: %w", err)
 	}
- if re.Code != nil && *re.Code != 0 {
- if *re.Code == 10000004 || *re.Code == 75500002 { return 0, nil, fmt.Errorf("%w: authConfig code %d", ErrSessionInvalid, *re.Code) }
- return 0, nil, fmt.Errorf("auth config failed with code %d: %s", *re.Code, re.Message)
- }
- if refresh && (re.Code == nil || re.Data.IsLogin == nil) { return 0, nil, fmt.Errorf("authConfig response missing code or isLogin") }
- if refresh && *re.Data.IsLogin != 1 { return 0, nil, ErrSessionInvalid }
+	if re.Code != nil && *re.Code != 0 {
+		if *re.Code == 10000004 || *re.Code == 75500002 {
+			return 0, nil, fmt.Errorf("%w: authConfig code %d", ErrSessionInvalid, *re.Code)
+		}
+		return 0, nil, fmt.Errorf("auth config failed with code %d: %s", *re.Code, re.Message)
+	}
+	if refresh && (re.Code == nil || re.Data.IsLogin == nil) {
+		return 0, nil, fmt.Errorf("authConfig response missing code or isLogin")
+	}
+	if refresh && *re.Data.IsLogin != 1 {
+		return 0, nil, ErrSessionInvalid
+	}
 
 	responseCSRFToken := re.Data.CSRF
 	if responseCSRFToken == "" {
@@ -146,7 +154,14 @@ func (s *Session) authConfigContext(ctx context.Context, mod, needTicket, refres
 	s.pubKeyExp = re.Data.PubKeyExp
 	s.antiReplayRand = re.Data.AntiReplayRand
 
-	if err := ctx.Err(); err != nil { return 0, nil, err }; isLogin := 0; if re.Data.IsLogin != nil { isLogin = *re.Data.IsLogin }; return isLogin, re.Data.AuthServerInfoList, nil
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
+	isLogin := 0
+	if re.Data.IsLogin != nil {
+		isLogin = *re.Data.IsLogin
+	}
+	return isLogin, re.Data.AuthServerInfoList, nil
 }
 
 func (s *Session) checkAntiMITMAuthConfig(ctx context.Context, resp *http.Response, data antiMITMAttackData, csrfToken string) error {

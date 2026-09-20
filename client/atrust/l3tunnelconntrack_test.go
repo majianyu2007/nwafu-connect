@@ -37,7 +37,7 @@ func TestConntrackManagerPrunesIdleFlows(t *testing.T) {
 	idle := manager.getOrCreate("idle", "app", "group")
 	manager.mu.Lock()
 	idle.expiresAt = time.Now().Add(-time.Second)
-	
+
 	manager.mu.Unlock()
 
 	manager.getOrCreate("active", "app", "group")

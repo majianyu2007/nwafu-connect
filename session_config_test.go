@@ -1,5 +1,7 @@
 package main
+
 import "testing"
+
 func TestSessionRefreshConfiguration(t *testing.T) {
 	file := writeConfig(t, "session_refresh_interval = 900\n")
 	for _, tt := range []struct {
@@ -25,4 +27,3 @@ func TestSessionRefreshConfiguration(t *testing.T) {
 		})
 	}
 }
-

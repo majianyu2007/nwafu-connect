@@ -2,8 +2,8 @@ package auth
 
 import (
 	"crypto/rand"
-	"errors"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,7 +119,6 @@ func testSessionForServer(server *httptest.Server) *Session {
 	session.client = server.Client()
 	return session
 }
-
 
 type failingAuthResponseReader struct {
 	err error

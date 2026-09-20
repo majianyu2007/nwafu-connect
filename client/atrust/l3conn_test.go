@@ -12,7 +12,7 @@ func testL3Tunnel() *L3Tunnel {
 	return &L3Tunnel{
 		conns:    make(map[string]*l3TunnelConn),
 		dataChan: make(chan []byte, 1),
-		closeCh:   make(chan struct{}),
+		closeCh:  make(chan struct{}),
 	}
 }
 

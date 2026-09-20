@@ -106,14 +106,18 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 	if res := ctx.Value(resolve.ContextKeyDomainResource); res != nil {
 		if resources, ok := res.(client.DomainResourceSet); ok {
 			resource, matched := matchDomainResourceForTunnel(resources, resourceNetwork, port)
- matchedResource = matched
- if matched { ctx = context.WithValue(ctx, resolve.ContextKeyDomainResource, resource) }
+			matchedResource = matched
+			if matched {
+				ctx = context.WithValue(ctx, resolve.ContextKeyDomainResource, resource)
+			}
 		}
 	}
 	if !matchedResource {
 		resource, matched := matchIPResourceForTunnel(d.resourceIndex, ip, resourceNetwork, port)
- matchedResource = matched
- if matched { ctx = context.WithValue(ctx, resolve.ContextKeyIPResource, resource) }
+		matchedResource = matched
+		if matched {
+			ctx = context.WithValue(ctx, resolve.ContextKeyIPResource, resource)
+		}
 	}
 
 	if d.alwaysUseVPN && !matchedResource {
@@ -215,4 +219,3 @@ func matchIPResourceForTunnel(index *ipresource.Index, target net.IP, network st
 	}
 	return index.Match(target, network, port)
 }
-

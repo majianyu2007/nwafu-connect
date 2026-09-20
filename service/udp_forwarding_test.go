@@ -115,11 +115,13 @@ func TestUDPForwardGoroutinesAreBoundedPerClient(t *testing.T) {
 	forward, err := newUDPForward(udpForwardTestStack{dialUDP: func(context.Context, *net.UDPAddr) (net.Conn, error) {
 		return upstream, nil
 	}}, "127.0.0.1:0", "192.0.2.1:53")
- if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
 	baseline := runtime.NumGoroutine()
 	go func() {
-		forward.startUDPForward()
+		forward.start()
 		close(done)
 	}()
 
@@ -179,10 +181,12 @@ func TestUDPForwardPreservesDatagramsAndReusesSession(t *testing.T) {
 		dials.Add(1)
 		return (&net.Dialer{}).DialContext(ctx, "udp", upstream.LocalAddr().String())
 	}}, "127.0.0.1:0", "192.0.2.1:53")
- if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
 	go func() {
-		forward.startUDPForward()
+		forward.start()
 		close(done)
 	}()
 	defer func() {
