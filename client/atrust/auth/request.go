@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,10 @@ func (s *Session) ServerVersionInfo() ([]byte, error) {
 }
 
 func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
+	return s.authConfigContext(context.Background(), mod, needTicket, false)
+}
+
+func (s *Session) authConfigContext(ctx context.Context, mod, needTicket, refresh bool) (int, []AuthInfo, error) {
 	log.Println("Perform GET /passport/v1/public/authConfig")
 
 	params := WithSharedParams(nil)
@@ -70,10 +75,11 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	}
 	if needTicket {
 		params.Set("needTicket", "1")
-	}
+ } else if refresh { params.Set("needTicket", "0")
+ }
 
 	u := s.baseURL + "/passport/v1/public/authConfig"
-	req, err := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"?"+params.Encode(), nil)
 	if err != nil {
 		return 0, nil, fmt.Errorf("create auth config request: %w", err)
 	}
@@ -90,18 +96,19 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "auth config", 8<<20)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden { return 0, nil, fmt.Errorf("%w: authConfig HTTP %d", ErrSessionInvalid, resp.StatusCode) }
+ body, err := readAuthHTTPResponse(resp, "auth config", 8<<20)
 	if err != nil {
 		return 0, nil, err
 	}
 	log.DebugPrintf("Received auth config: %s", string(body))
 
 	var re struct {
-		Code    int    `json:"code"`
+		Code    *int    `json:"code"`
 		Message string `json:"message"`
 		Data    struct {
 			AuthServerInfoList []AuthInfo `json:"authServerInfoList"`
-			IsLogin            int        `json:"isLogin"`
+			IsLogin            *int        `json:"isLogin"`
 			CSRF               string     `json:"csrfToken"`
 			Security           struct {
 				CSRF string `json:"csrfToken"`
@@ -115,16 +122,19 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	if err := json.Unmarshal(body, &re); err != nil {
 		return 0, nil, fmt.Errorf("decode auth config response: %w", err)
 	}
-	if re.Code != 0 {
-		return 0, nil, fmt.Errorf("auth config failed with code %d: %s", re.Code, re.Message)
-	}
-	log.DebugPrintf("Parsed auth config: %+v", re)
+ if re.Code != nil && *re.Code != 0 {
+ if *re.Code == 10000004 || *re.Code == 75500002 { return 0, nil, fmt.Errorf("%w: authConfig code %d", ErrSessionInvalid, *re.Code) }
+ return 0, nil, fmt.Errorf("auth config failed with code %d: %s", *re.Code, re.Message)
+ }
+ if refresh && (re.Code == nil || re.Data.IsLogin == nil) { return 0, nil, fmt.Errorf("authConfig response missing code or isLogin") }
+ if refresh && *re.Data.IsLogin != 1 { return 0, nil, ErrSessionInvalid }
+
 	responseCSRFToken := re.Data.CSRF
 	if responseCSRFToken == "" {
 		responseCSRFToken = re.Data.Security.CSRF
 	}
 	if len(re.Data.AntiMITM.raw) != 0 {
-		if err := s.checkAntiMITMAuthConfig(resp, re.Data.AntiMITM, responseCSRFToken); err != nil {
+		if err := s.checkAntiMITMAuthConfig(ctx, resp, re.Data.AntiMITM, responseCSRFToken); err != nil {
 			// Official desktop and Android clients report this through their
 			// event/UI layer, but their authentication callers continue.
 			log.Printf("aTrust anti-MITM check failed: %v", err)
@@ -136,10 +146,10 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	s.pubKeyExp = re.Data.PubKeyExp
 	s.antiReplayRand = re.Data.AntiReplayRand
 
-	return re.Data.IsLogin, re.Data.AuthServerInfoList, nil
+	if err := ctx.Err(); err != nil { return 0, nil, err }; isLogin := 0; if re.Data.IsLogin != nil { isLogin = *re.Data.IsLogin }; return isLogin, re.Data.AuthServerInfoList, nil
 }
 
-func (s *Session) checkAntiMITMAuthConfig(resp *http.Response, data antiMITMAttackData, csrfToken string) error {
+func (s *Session) checkAntiMITMAuthConfig(ctx context.Context, resp *http.Response, data antiMITMAttackData, csrfToken string) error {
 	if err := verifySangforChallenge(data); err != nil {
 		return err
 	}
@@ -158,10 +168,14 @@ func (s *Session) checkAntiMITMAuthConfig(resp *http.Response, data antiMITMAtta
 	if data.AntiMITMRequest {
 		return nil
 	}
-	return s.performAntiMITMRequest(data, csrfToken)
+	return s.performAntiMITMRequestContext(ctx, data, csrfToken)
 }
 
 func (s *Session) performAntiMITMRequest(data antiMITMAttackData, csrfToken string) error {
+	return s.performAntiMITMRequestContext(context.Background(), data, csrfToken)
+}
+
+func (s *Session) performAntiMITMRequestContext(ctx context.Context, data antiMITMAttackData, csrfToken string) error {
 	nonce, err := sangforNonce()
 	if err != nil {
 		return fmt.Errorf("aTrust anti-MITM request failed: generate nonce: %w", err)
@@ -173,7 +187,7 @@ func (s *Session) performAntiMITMRequest(data antiMITMAttackData, csrfToken stri
 		params.Set("mobileId", s.deviceID)
 	}
 	u := s.baseURL + "/controller/v1/public/antiMITMRequest"
-	req, err := http.NewRequest(http.MethodPost, u+"?"+params.Encode(), bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u+"?"+params.Encode(), bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

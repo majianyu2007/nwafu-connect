@@ -65,3 +65,6 @@ auto_detect_interface = false
 # 调试输出默认关闭；TLS 密钥日志可用于解密抓包，请妥善保管。
 debug_pcap_file = ""
 debug_tls_log_file = ""
+
+# aTrust 会话刷新间隔（秒），0 为关闭
+session_refresh_interval = 1800

@@ -98,20 +98,16 @@ func main() {
 		})
 	}
 
+ var saveClientData func([]byte) error
+ if conf.ClientDataFile != "" { saveClientData = func(data []byte) error { return writePrivateFile(conf.ClientDataFile, data) } }
 	log.Println("VPN protocol: aTrust")
 	clientData, err = vpnClient.(*atrustclient.Client).Setup(atrustclient.SetupOptions{
  ServerAddress: conf.ServerAddress, ServerPort: conf.ServerPort, LoginMethod: loginMethod, TOTPSecret: conf.TOTPSecret,
+ SessionRefreshInterval: time.Duration(conf.SessionRefreshInterval)*time.Second, SaveClientData: saveClientData,
  ClientData: clientData, ResourceData: resourceData, BestNodesRefreshInterval: time.Duration(conf.UpdateBestNodesInterval)*time.Second,
  })
 	if err != nil {
 		fatalWithCleanup("VPN client setup error: %s", err)
-	}
-
-	if conf.ClientDataFile != "" {
-		if err := writePrivateFile(conf.ClientDataFile, clientData); err != nil {
-			fatalWithCleanup("Write client data file error: %s", err)
-		}
-		log.Printf("Client data saved to %s", conf.ClientDataFile)
 	}
 
 	log.Printf("VPN client started")

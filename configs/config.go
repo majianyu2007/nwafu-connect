@@ -1,6 +1,7 @@
 package configs
 
 type Config struct {
+ SessionRefreshInterval int `koanf:"session_refresh_interval"`
  Protocol string `koanf:"protocol"`
  ServerAddress string `koanf:"server_address"`
  ServerPort int `koanf:"server_port"`
@@ -63,7 +64,7 @@ type SingleCustomDNS struct {
  IP string `koanf:"ip" toml:"ip"`
 }
 func Default() Config { return Config{
- Protocol: "atrust", ServerAddress: "vpn.nwafu.edu.cn", ServerPort: 443,
+ SessionRefreshInterval: 1800, Protocol: "atrust", ServerAddress: "vpn.nwafu.edu.cn", ServerPort: 443,
  AuthType: "auth/psw", LoginDomain: "LDAP", SocksBind: "127.0.0.1:1080", HTTPBind: "127.0.0.1:1081",
  DNSTTL: 3600, RemoteDNSServer: "auto", SecondaryDNSServer: "114.114.114.114", UpdateBestNodesInterval: 300,
  QYWechatQRCodeFile: "qywechat_qrcode.png", QYWechatQRCodeTerminal: true, QYWechatQRCodeBrowser: true,
@@ -71,6 +72,7 @@ func Default() Config { return Config{
 
 type (
 	ConfigTOML struct {
+ SessionRefreshInterval *int `toml:"session_refresh_interval"`
   Protocol *string `toml:"protocol"`
   LocalDNSServer *string `toml:"local_dns_server"`
   DebugPCAPFile *string `toml:"debug_pcap_file"`

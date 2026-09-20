@@ -130,7 +130,6 @@ func TestCollectionCLIReplacesConfig(t *testing.T) {
 port_forwarding = [
   { network_type = "tcp", bind_address = "127.0.0.1:1", remote_address = "10.0.0.1:1" }
 ]
-custom_proxy_domain = ["file.example.com"]
 `)
 
 	options, _, err := loadStartupOptions([]string{
