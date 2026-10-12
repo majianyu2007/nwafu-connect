@@ -29,6 +29,10 @@ type Client struct {
 	ConnectionID string
 	SignKey      string
 
+	// Prompter, when set before Setup, answers interactive login steps
+	// (captcha, SMS/TOTP codes) instead of the terminal/browser pages.
+	Prompter auth.Prompter
+
 	serverAddress   string
 	ipResources     []client.IPResource
 	resourceIndex   *ipresource.Index
@@ -280,6 +284,7 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 			DeviceID:   c.DeviceID,
 			Cookies:    clientAuthData.Cookies,
 			TOTPSecret: totpSecret,
+			Prompter:   c.Prompter,
 		})
 		if err != nil {
 			log.Println("Login error:", err)

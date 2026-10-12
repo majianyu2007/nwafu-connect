@@ -15,7 +15,8 @@ func (s *Session) completeTOTP(step authStep) (authStep, error) {
 	var code string
 	if s.totpSecret == "" {
 		var err error
-		code, err = readVerificationCode(
+		code, err = s.readVerificationCode(
+			"totp",
 			"输入动态验证码",
 			"请输入身份验证器当前显示的一次性验证码。",
 			false,

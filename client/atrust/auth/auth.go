@@ -71,6 +71,21 @@ type Session struct {
 	ticket         string
 
 	response map[string]json.RawMessage
+
+	prompter Prompter
+}
+
+// Prompter lets an embedding host answer interactive login steps instead of
+// the terminal / local browser pages used by the CLI. A nil Prompter keeps
+// the CLI behaviour.
+type Prompter interface {
+	// GraphCheckCode receives the gateway's click captcha image and returns
+	// the clicked coordinates in any format canonicalizeGraphCheckCode accepts
+	// (e.g. `[[x,y],...]` or `{"coordinates":[[x,y]],"width":w,"height":h}`).
+	GraphCheckCode(image []byte) (string, error)
+	// VerificationCode asks for a one-time code. kind is "sms" or "totp".
+	// A leading "$" requests skipping secondary auth where allowSkip is true.
+	VerificationCode(kind, title, hint string, allowSkip bool) (string, error)
 }
 
 func NewSession(server string) *Session {
@@ -108,6 +123,8 @@ type LoginOptions struct {
 	DeviceID   string
 	Cookies    []Cookie
 	TOTPSecret string
+	// Prompter, when non-nil, answers captcha and verification-code steps.
+	Prompter Prompter
 }
 
 type LoginResult struct {
@@ -156,7 +173,16 @@ func (s *Session) withGraphCheckCode(process func(string) (int, error), graphCod
 		}
 
 		var graphCheckCode string
-		if graphCodeFile != "" {
+		if s.prompter != nil {
+			raw, promptErr := s.prompter.GraphCheckCode(imgData)
+			if promptErr != nil {
+				return fmt.Errorf("failed to get captcha input: %w", promptErr)
+			}
+			graphCheckCode, err = canonicalizeGraphCheckCode(raw, imgData)
+			if err != nil {
+				return fmt.Errorf("invalid captcha input: %w", err)
+			}
+		} else if graphCodeFile != "" {
 			if writeErr := os.WriteFile(graphCodeFile, imgData, 0600); writeErr != nil {
 				return fmt.Errorf("write graph check code image %q: %w", graphCodeFile, writeErr)
 			} else {
@@ -293,6 +319,7 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 
 	s.deviceID = opts.DeviceID
 	s.totpSecret = opts.TOTPSecret
+	s.prompter = opts.Prompter
 	deviceEnvironment, err := json.Marshal(struct {
 		DeviceID string `json:"deviceId"`
 	}{DeviceID: opts.DeviceID})

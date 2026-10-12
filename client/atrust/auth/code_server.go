@@ -71,6 +71,21 @@ button:focus-visible { outline: 3px solid #2e705c; outline-offset: 3px; }
 
 const verificationSuccessHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>验证完成</title><style>body{min-height:100vh;margin:0;display:grid;place-items:center;background:#eef4f1;color:#17251f;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{padding:32px;text-align:center}strong{display:block;margin-bottom:8px;color:#0d4f3c;font-size:24px}span{color:#65756e}</style></head><body><main><strong>验证信息已提交</strong><span>可以关闭此页面并返回 NWAFU Connect。</span></main></body></html>`
 
+func (s *Session) readVerificationCode(kind, title, hint string, allowSkip bool) (string, error) {
+	if s.prompter != nil {
+		code, err := s.prompter.VerificationCode(kind, title, hint, allowSkip)
+		if err != nil {
+			return "", err
+		}
+		code = strings.TrimSpace(code)
+		if code == "" {
+			return "", errors.New("empty verification code")
+		}
+		return code, nil
+	}
+	return readVerificationCode(title, hint, allowSkip)
+}
+
 func readVerificationCode(title, hint string, allowSkip bool) (string, error) {
 	if stdinCanProvideCode() {
 		log.Printf("%s: ", title)

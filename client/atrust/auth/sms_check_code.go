@@ -37,7 +37,8 @@ func (s *Session) loginAuthSmsCheckCode(phone, loginDomain, graphCodeFile string
 		return err
 	}
 
-	code, err := readVerificationCode(
+	code, err := s.readVerificationCode(
+		"sms",
 		"输入短信验证码",
 		"请输入学校网关发送到已登记手机的验证码。",
 		false,

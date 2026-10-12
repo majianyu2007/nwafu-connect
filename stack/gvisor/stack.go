@@ -222,3 +222,17 @@ func (s *Stack) Run() error {
 		return err
 	}
 }
+
+// Close releases the L3 tunnel connection and the gVisor stack. The CLI
+// never calls it (process exit cleans up); embedders that start and stop
+// sessions in one process do.
+func (s *Stack) Close() error {
+	var err error
+	if s.endpoint != nil && s.endpoint.l3Conn != nil {
+		err = s.endpoint.l3Conn.Close()
+	}
+	if s.gvisorStack != nil {
+		s.gvisorStack.Close()
+	}
+	return err
+}

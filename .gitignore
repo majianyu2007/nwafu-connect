@@ -26,3 +26,5 @@ go.work
 config.toml
 client_data.json
 qywechat_qrcode.png
+# Embeddable library build output
+/build/

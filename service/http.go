@@ -261,16 +261,28 @@ func newHTTPServer(handler http.Handler) *http.Server {
 }
 
 func StartHTTP(bindAddr string, dialer *dial.Dialer) (string, error) {
+	actualAddr, closeProxy, err := ServeHTTPProxy(bindAddr, dialer)
+	if err != nil {
+		return "", err
+	}
+	hook_func.RegisterTerminalFunc("CloseHTTPListener", closeProxy)
+	return actualAddr, nil
+}
+
+// ServeHTTPProxy starts the HTTP proxy on bindAddr and returns the bound
+// address plus a function that shuts it down. Unlike StartHTTP it does not
+// register a global terminal hook, so embedders can own its lifetime.
+func ServeHTTPProxy(bindAddr string, dialer *dial.Dialer) (string, func(context.Context) error, error) {
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		return "", fmt.Errorf("start HTTP listener: %w", err)
+		return "", nil, fmt.Errorf("start HTTP listener: %w", err)
 	}
 	actualAddr := listener.Addr().String()
 	proxy := newHTTPProxy(dialer)
 	server := newHTTPServer(proxy)
 	log.Printf("HTTP server listening on %s", actualAddr)
 
-	hook_func.RegisterTerminalFunc("CloseHTTPListener", func(ctx context.Context) error {
+	closeProxy := func(ctx context.Context) error {
 		log.Println("Closing HTTP listener...")
 		shutdownContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
@@ -279,7 +291,7 @@ func StartHTTP(bindAddr string, dialer *dial.Dialer) (string, error) {
 			return fmt.Errorf("close HTTP listener failed: %w", err)
 		}
 		return nil
-	})
+	}
 
 	go func() {
 		if err := server.Serve(listener); err != nil {
@@ -290,7 +302,7 @@ func StartHTTP(bindAddr string, dialer *dial.Dialer) (string, error) {
 			}
 		}
 	}()
-	return actualAddr, nil
+	return actualAddr, closeProxy, nil
 }
 
 func writeProxyError(writer http.ResponseWriter, err error) {

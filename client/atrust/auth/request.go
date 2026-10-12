@@ -14,7 +14,6 @@ import (
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
-
 func readAuthHTTPResponse(response *http.Response, operation string, limit int64) ([]byte, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("%s response limit must be positive", operation)
@@ -420,7 +419,8 @@ func (s *Session) authSms(step authStep) error {
 func (s *Session) smsCheckCode(step authStep) (authStep, error) {
 	log.Println("Perform POST /passport/v1/auth/sms")
 
-	code, err := readVerificationCode(
+	code, err := s.readVerificationCode(
+		"sms",
 		"输入短信验证码",
 		"请输入学校网关发送到已登记手机的验证码。",
 		true,
