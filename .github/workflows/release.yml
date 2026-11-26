@@ -101,7 +101,7 @@ jobs:
         include:
           - runner: macos-15-intel
             arch: amd64
-          - runner: macos-14
+          - runner: macos-15
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -110,6 +110,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Download Go modules
+        run: |
+          for i in 1 2 3; do
+            go mod download && exit 0
+            sleep 5
+          done
+          exit 1
       - name: Build macOS application bundle
         env:
           CGO_ENABLED: "1"
@@ -370,13 +377,20 @@ jobs:
   mobile-apple:
     name: Apple Core Libraries (iOS XCFramework + macOS Universal dylib)
     needs: test
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+      - name: Download Go modules
+        run: |
+          for i in 1 2 3; do
+            go mod download && exit 0
+            sleep 5
+          done
+          exit 1
       - name: Build iOS XCFramework and macOS Universal dylib
         run: |
           set -euo pipefail
