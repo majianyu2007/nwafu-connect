@@ -6,23 +6,25 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
+	"time"
 
+	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
 	"github.com/majianyu2007/nwafu-connect/log"
-	"github.com/majianyu2007/nwafu-connect/stack"
 )
 
-func StartTCPForwarding(vpnStack stack.Stack, bindAddress, remoteAddress string) (string, error) {
+const tcpForwardingDialTimeout = 15 * time.Second
+
+func StartTCPForwarding(dialContext client.DialContextFunc, bindAddress, remoteAddress string) (string, error) {
+	if dialContext == nil {
+		return "", errors.New("TCP forwarding dialer is required")
+	}
 	host, portText, err := net.SplitHostPort(remoteAddress)
-	if err != nil {
-		return "", fmt.Errorf("invalid TCP forwarding destination %q: %w", remoteAddress, err)
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "", fmt.Errorf("invalid TCP forwarding destination %q", remoteAddress)
 	}
-	destination := &net.TCPAddr{IP: net.ParseIP(host)}
-	if destination.IP == nil {
-		return "", fmt.Errorf("invalid TCP forwarding destination IP %q", host)
-	}
-	destination.Port, err = net.LookupPort("tcp", portText)
-	if err != nil {
+	if _, err := net.LookupPort("tcp", portText); err != nil {
 		return "", fmt.Errorf("invalid TCP forwarding destination port %q: %w", portText, err)
 	}
 
@@ -31,7 +33,7 @@ func StartTCPForwarding(vpnStack stack.Stack, bindAddress, remoteAddress string)
 		return "", fmt.Errorf("start TCP forwarding listener: %w", err)
 	}
 	actualAddress := listener.Addr().String()
-	log.Printf("TCP port forwarding: %s -> %s", actualAddress, destination)
+	log.Printf("TCP port forwarding: %s -> %s", actualAddress, remoteAddress)
 	hook_func.RegisterTerminalFunc("CloseTCPForwardingPort", func(ctx context.Context) error {
 		log.Println("Closing TCP forwarding port...")
 		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
@@ -49,17 +51,19 @@ func StartTCPForwarding(vpnStack stack.Stack, bindAddress, remoteAddress string)
 				}
 				return
 			}
-			go handleTCPForwardingRequest(vpnStack, connection, destination)
+			go handleTCPForwardingRequest(dialContext, connection, remoteAddress)
 		}
 	}()
 	return actualAddress, nil
 }
 
-func handleTCPForwardingRequest(vpnStack stack.Stack, connection net.Conn, destination *net.TCPAddr) {
-	log.Printf("Port forwarding (TCP): %s -> %s -> %s", connection.RemoteAddr(), connection.LocalAddr(), destination)
-	proxy, err := vpnStack.DialTCP(context.Background(), destination)
+func handleTCPForwardingRequest(dialContext client.DialContextFunc, connection net.Conn, remoteAddress string) {
+	log.Printf("Port forwarding (TCP): %s -> %s -> %s", connection.RemoteAddr(), connection.LocalAddr(), remoteAddress)
+	ctx, cancel := context.WithTimeout(context.Background(), tcpForwardingDialTimeout)
+	proxy, err := dialContext(ctx, "tcp", remoteAddress)
+	cancel()
 	if err != nil {
-		log.Printf("TCP forwarding dial failed for %s: %v", destination, err)
+		log.Printf("TCP forwarding dial failed for %s: %v", remoteAddress, err)
 		_ = connection.Close()
 		return
 	}

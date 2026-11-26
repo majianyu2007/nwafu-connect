@@ -1,17 +1,15 @@
 name: Publish Docker image
 
 on:
+  workflow_dispatch:
   release:
-    types: [ published ]
+    types: [published]
   push:
-    paths:
-      - "**/*.go"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/*.yml"
-      - "Dockerfile"
+    tags:
+      - "v*"
 
-permissions: write-all
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -20,50 +18,45 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # https://github.com/docker/setup-qemu-action
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
 
-      # https://github.com/docker/setup-buildx-action
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
-      # https://github.com/docker/login-action
       - name: Login to DockerHub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # https://github.com/docker/metadata-action
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v3
+        uses: docker/metadata-action@v5
         with:
           images: ${{ vars.DOCKER_IMAGE }}
           tags: |
-            type=schedule
             type=ref,event=branch
-            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') }}
             type=sha
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Prepare version info
         id: vars
         run: |
-          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "commit_flag=" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "release" ] || [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "commit_id=" >> "$GITHUB_OUTPUT"
           else
-            echo "commit_flag=-X 'main.CommitID=$(git rev-parse --short HEAD)'" >> $GITHUB_OUTPUT
+            echo "version=dev" >> "$GITHUB_OUTPUT"
+            echo "commit_id=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           fi
 
-      # https://github.com/docker/build-push-action
       - name: Build and push
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -71,4 +64,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            COMMIT_FLAG=${{ steps.vars.outputs.commit_flag }}
+            VERSION=${{ steps.vars.outputs.version }}
+            COMMIT_ID=${{ steps.vars.outputs.commit_id }}

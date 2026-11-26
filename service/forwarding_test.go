@@ -23,7 +23,7 @@ func (s *forwardingTestStack) Run() error { return nil }
 
 func (s *forwardingTestStack) SetupResolve(zcdns.LocalServer) {}
 
-func (s *forwardingTestStack) SetupIPPool(*ippool.IPPool[client.DomainResourceSet]) {}
+func (s *forwardingTestStack) SetupIPPool(*ippool.IPPool[[]client.DomainResource]) {}
 
 func (s *forwardingTestStack) DialTCP(ctx context.Context, address *net.TCPAddr) (net.Conn, error) {
 	return s.dialTCP(ctx, address)
@@ -34,7 +34,10 @@ func (s *forwardingTestStack) DialUDP(ctx context.Context, address *net.UDPAddr)
 }
 
 func TestForwardingRejectsMalformedDestinations(t *testing.T) {
-	if _, err := StartTCPForwarding(nil, "127.0.0.1:0", "missing-port"); err == nil {
+	dialer := func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("unused")
+	}
+	if _, err := StartTCPForwarding(dialer, "127.0.0.1:0", "missing-port"); err == nil {
 		t.Fatal("TCP forwarding accepted a malformed destination")
 	}
 	if _, err := StartUDPForwarding(nil, "127.0.0.1:0", "missing-port"); err == nil {
@@ -43,13 +46,13 @@ func TestForwardingRejectsMalformedDestinations(t *testing.T) {
 }
 
 func TestTCPForwardingDialFailureClosesClientWithoutPanicking(t *testing.T) {
-	vpnStack := &forwardingTestStack{dialTCP: func(context.Context, *net.TCPAddr) (net.Conn, error) {
+	dialer := func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("dial failed")
-	}}
+	}
 	clientConnection, forwardingConnection := net.Pipe()
 	done := make(chan struct{})
 	go func() {
-		handleTCPForwardingRequest(vpnStack, forwardingConnection, &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 443})
+		handleTCPForwardingRequest(dialer, forwardingConnection, "192.0.2.10:443")
 		close(done)
 	}()
 	if err := clientConnection.SetReadDeadline(time.Now().Add(time.Second)); err != nil {

@@ -2,6 +2,8 @@ package auth
 
 import (
 	"bytes"
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,26 +13,58 @@ import (
 	"strings"
 	"time"
 
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
 func readAuthHTTPResponse(response *http.Response, operation string, limit int64) ([]byte, error) {
-	if limit < 1 {
-		return nil, fmt.Errorf("%s response limit must be positive", operation)
-	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("read %s response: %w", operation, err)
+		return nil, fmt.Errorf("%s: read response body: %w", operation, err)
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("%s response exceeds %d bytes", operation, limit)
+		return nil, fmt.Errorf("%s: response body exceeds %d bytes", operation, limit)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("%s returned HTTP status %d", operation, response.StatusCode)
+		log.DebugPrintf("%s failed with HTTP %d: %s", operation, response.StatusCode, string(body))
+		return nil, fmt.Errorf("%s failed with HTTP status %d", operation, response.StatusCode)
 	}
 	return body, nil
 }
+
+func (s *Session) ServerVersionInfo() ([]byte, error) {
+	log.Println("Perform GET /public/manifest")
+
+	req, err := http.NewRequest(http.MethodGet, s.baseURL+"/public/manifest", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", UserAgent)
+
+	resp, err := s.request(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("aTrust server manifest returned HTTP status %d", resp.StatusCode)
+	}
+	body, err := readAuthHTTPResponse(resp, "server manifest", 8<<20)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ParseServerVersionInfo(body); err != nil {
+		return nil, err
+	}
+	log.DebugPrintf("Received server manifest: %s", string(body))
+	return body, nil
+}
+
 func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
+	return s.authConfigContext(context.Background(), mod, needTicket, false)
+}
+
+func (s *Session) authConfigContext(ctx context.Context, mod, needTicket, refresh bool) (int, []AuthInfo, error) {
 	log.Println("Perform GET /passport/v1/public/authConfig")
 
 	params := WithSharedParams(nil)
@@ -39,64 +73,190 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	}
 	if needTicket {
 		params.Set("needTicket", "1")
+	} else if refresh {
+		params.Set("needTicket", "0")
 	}
 
 	u := s.baseURL + "/passport/v1/public/authConfig"
-	req, err := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"?"+params.Encode(), nil)
 	if err != nil {
-		return 0, nil, fmt.Errorf("create auth config request: %w", err)
+		return 0, nil, err
 	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-rid", s.rid)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return 0, nil, err
 	}
-
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "auth config", 8<<20)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return 0, nil, fmt.Errorf("%w: authConfig HTTP %d", ErrSessionInvalid, resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, nil, fmt.Errorf("authConfig HTTP %d", resp.StatusCode)
+	}
+	body, err := readAuthHTTPResponse(resp, "authConfig", 8<<20)
 	if err != nil {
 		return 0, nil, err
 	}
 	log.DebugPrintf("Received auth config: %s", string(body))
 
 	var re struct {
-		Code    int    `json:"code"`
+		Code    *int   `json:"code"`
 		Message string `json:"message"`
 		Data    struct {
 			AuthServerInfoList []AuthInfo `json:"authServerInfoList"`
-			IsLogin            int        `json:"isLogin"`
+			IsLogin            *int       `json:"isLogin"`
 			CSRF               string     `json:"csrfToken"`
 			Security           struct {
 				CSRF string `json:"csrfToken"`
 			} `json:"security"`
-			PubKey         string `json:"pubKey"`
-			PubKeyExp      string `json:"pubKeyExp"`
-			AntiReplayRand string `json:"antiReplayRand"`
+			PubKey         string             `json:"pubKey"`
+			PubKeyExp      string             `json:"pubKeyExp"`
+			AntiReplayRand string             `json:"antiReplayRand"`
+			AntiMITM       antiMITMAttackData `json:"antiMITMAttackData"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &re); err != nil {
-		return 0, nil, fmt.Errorf("decode auth config response: %w", err)
+	err = json.Unmarshal(body, &re)
+	if err != nil {
+		return 0, nil, err
 	}
-	if re.Code != 0 {
-		return 0, nil, fmt.Errorf("auth config failed with code %d: %s", re.Code, re.Message)
+	if re.Code != nil && *re.Code != 0 {
+		if *re.Code == 10000004 || *re.Code == 75500002 {
+			return 0, nil, fmt.Errorf("%w: authConfig code %d", ErrSessionInvalid, *re.Code)
+		}
+		if re.Message != "" {
+			return 0, nil, fmt.Errorf("authConfig failed with code %d: %s", *re.Code, re.Message)
+		}
+		return 0, nil, fmt.Errorf("authConfig failed with code %d", *re.Code)
 	}
-	log.DebugPrintf("Parsed auth config: %+v", re)
+	if refresh && (re.Code == nil || re.Data.IsLogin == nil) {
+		return 0, nil, fmt.Errorf("authConfig response missing code or isLogin")
+	}
+	if refresh && *re.Data.IsLogin != 1 {
+		return 0, nil, ErrSessionInvalid
+	}
+	responseCSRFToken := re.Data.CSRF
+	if responseCSRFToken == "" {
+		responseCSRFToken = re.Data.Security.CSRF
+	}
+	if len(re.Data.AntiMITM.raw) != 0 {
+		if err := s.checkAntiMITMAuthConfig(ctx, resp, re.Data.AntiMITM, responseCSRFToken); err != nil {
+			// Official desktop and Android clients report this through their
+			// event/UI layer, but their authentication callers continue.
+			log.Printf("aTrust anti-MITM check failed: %v", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
 
-	s.csrfToken = re.Data.CSRF
-	if s.csrfToken == "" {
-		s.csrfToken = re.Data.Security.CSRF
-	}
+	s.csrfToken = responseCSRFToken
 	s.pubKey = re.Data.PubKey
 	s.pubKeyExp = re.Data.PubKeyExp
 	s.antiReplayRand = re.Data.AntiReplayRand
+	s.signKey = sangforSignatureKey(re.Data.AntiMITM)
 
-	return re.Data.IsLogin, re.Data.AuthServerInfoList, nil
+	isLogin := 0
+	if re.Data.IsLogin != nil {
+		isLogin = *re.Data.IsLogin
+	}
+	return isLogin, re.Data.AuthServerInfoList, nil
+}
+
+func (s *Session) checkAntiMITMAuthConfig(ctx context.Context, resp *http.Response, data antiMITMAttackData, csrfToken string) error {
+	if err := verifySangforChallenge(data); err != nil {
+		return err
+	}
+	if err := verifySangforMITMSignature(data); err != nil {
+		return err
+	}
+	if data.Enable != 1 {
+		return nil
+	}
+	if resp.TLS == nil {
+		return fmt.Errorf("aTrust anti-MITM verification failed: response was not received over TLS")
+	}
+	if err := verifySangforCertificateIdentity(resp.TLS.PeerCertificates, data); err != nil {
+		return err
+	}
+	if data.AntiMITMRequest {
+		return nil
+	}
+	return s.performAntiMITMRequestContext(ctx, data, csrfToken)
+}
+
+func (s *Session) performAntiMITMRequest(data antiMITMAttackData, csrfToken string) error {
+	return s.performAntiMITMRequestContext(context.Background(), data, csrfToken)
+}
+
+func (s *Session) performAntiMITMRequestContext(ctx context.Context, data antiMITMAttackData, csrfToken string) error {
+	nonce, err := sangforNonce()
+	if err != nil {
+		return fmt.Errorf("aTrust anti-MITM request failed: generate nonce: %w", err)
+	}
+	payload := []byte(fmt.Sprintf("\n            {\n                \"nonce\": \"%s\",\n                \"ticket\": \"%s\"\n            }\n        ", nonce, data.Ticket))
+
+	params := WithSharedParams(nil)
+	if s.deviceID != "" {
+		params.Set("mobileId", s.deviceID)
+	}
+	u := s.baseURL + "/controller/v1/public/antiMITMRequest"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u+"?"+params.Encode(), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-csrf-token", csrfToken)
+	req.Header.Set("x-sdp-rid", s.rid)
+	req.Header.Set("x-sdp-traceid", s.randSdpId())
+
+	resp, err := s.request(req)
+	if err != nil {
+		return fmt.Errorf("aTrust anti-MITM request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("aTrust anti-MITM request failed with HTTP status %d", resp.StatusCode)
+	}
+	body, err := readAuthHTTPResponse(resp, "aTrust anti-MITM request", 8<<20)
+	if err != nil {
+		return fmt.Errorf("aTrust anti-MITM request failed: %w", err)
+	}
+
+	var result struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			Nonce          string `json:"nonce"`
+			AntiMITMEnable int    `json:"antiMITMEnable"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("aTrust anti-MITM request failed: invalid response: %w", err)
+	}
+	if result.Data.Nonce != nonce {
+		return fmt.Errorf("aTrust anti-MITM request nonce mismatch")
+	}
+	if result.Code == 10000004 {
+		return fmt.Errorf("aTrust anti-MITM request denied: session not found")
+	}
+	if result.Code == 10000008 {
+		return fmt.Errorf("aTrust anti-MITM request detected a MITM attack")
+	}
+
+	expected := sangforHMAC(sangforSignatureKey(data), body)
+	actual := strings.ToUpper(resp.Header.Get("X-Response-Sig"))
+	if subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) != 1 {
+		return fmt.Errorf("aTrust anti-MITM response signature mismatch")
+	}
+	return nil
 }
 
 func (s *Session) reportEnv() error {
@@ -117,25 +277,34 @@ func (s *Session) reportEnv() error {
 				"device": map[string]interface{}{
 					"type": "browser",
 				},
+				"mac_addresses": s.macAddresses,
 			},
 		},
 	}
-	body, _ := json.Marshal(payload)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
 	log.DebugPrintf("Sending report env: %s", string(body))
-	req, _ := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(body))
+	query := WithSharedParams(nil).Encode()
+	req, err := http.NewRequest("POST", u+"?"+query, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Content-Type", "application/json;charset=utf-8")
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
+	req.Header.Set("X-Request-Sig", sangforHMAC(s.signKey, append([]byte("/controller/v1/public/reportEnv?"+query), body...)))
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err = readAuthHTTPResponse(resp, "report environment", 8<<20)
+	body, err = readAuthHTTPResponse(resp, "reportEnv", 8<<20)
 	if err != nil {
 		return err
 	}
@@ -153,7 +322,6 @@ func (s *Session) reportEnv() error {
 
 	if re.Code != 0 {
 		log.Printf("reportEnv failed with code %d", re.Code)
-		log.DebugPrintf("reportEnv failure response: %s", string(body))
 		return fmt.Errorf("reportEnv failed with code %d", re.Code)
 	}
 
@@ -176,16 +344,16 @@ type authServiceInfo struct {
 
 type authStepData struct {
 	NextService     string            `json:"nextService"`
-	NextServiceList []authServiceInfo `json:"nextServiceList"`
 	Subtype         string            `json:"subtype"`
 	TaskID          string            `json:"taskId"`
 	IsPrevEffect    bool              `json:"isPrevEffect"`
+	NextServiceList []authServiceInfo `json:"nextServiceList"`
 }
 
 type authStep struct {
 	Service      string
-	AuthID       string
 	Subtype      string
+	AuthID       string
 	TaskID       string
 	IsPrevEffect bool
 	SMSMode      smsMode
@@ -213,16 +381,30 @@ func authStepFromData(data authStepData) authStep {
 
 	if selected != nil {
 		step.AuthID = selected.AuthID
-		if step.Service == "" {
-			step.Service = selected.AuthType
-		}
 		if step.Subtype == "" {
 			step.Subtype = selected.SubType
+		}
+		switch step.Service {
+		case "":
+			step.Service = selected.AuthType
+		case "auth/token":
+			switch selected.AuthType {
+			case "auth/totp", "auth/radius", "auth/challenge":
+				step.Service = selected.AuthType
+			case "auth/token":
+				if selected.SubType == "totp" {
+					step.Service = "auth/totp"
+				}
+			}
 		}
 	}
 
 	if step.Service == "auth/token" && step.Subtype == "totp" {
 		step.Service = "auth/totp"
+	}
+
+	if step.Service == "auth/sendSms" {
+		step.Service = "auth/sms"
 	}
 
 	// Some older gateways omit authType and only return an authId. This was
@@ -246,19 +428,22 @@ func (s *Session) authCheck() (authStep, error) {
 	log.Println("Perform GET /passport/v1/auth/authCheck")
 
 	u := s.baseURL + "/passport/v1/auth/authCheck"
-	req, _ := http.NewRequest("GET", u+"?"+WithSharedParams(nil).Encode(), nil)
+	req, err := http.NewRequest("GET", u+"?"+WithSharedParams(nil).Encode(), nil)
+	if err != nil {
+		return authStep{}, err
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return authStep{}, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "authentication check", 8<<20)
+	body, err := readAuthHTTPResponse(resp, "authCheck", 8<<20)
 	if err != nil {
 		return authStep{}, err
 	}
@@ -290,19 +475,22 @@ func (s *Session) phoneNumber(authID string) ([]string, error) {
 	if authID != "" {
 		params.Set("authId", authID)
 	}
-	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	req, err := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "registered phone number", 8<<20)
+	body, err := readAuthHTTPResponse(resp, "phoneNumber", 8<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -368,104 +556,107 @@ func (s *Session) authSms(step authStep) error {
 			return fmt.Errorf("SMS authentication requires authId")
 		}
 		params.Set("isPrevEffect", "0")
-		params.Set("taskId", "")
+		params.Set("taskId", step.TaskID)
 		params.Set("authId", step.AuthID)
 	case smsWithoutAuthID:
 		// The stateful SMS flow does not use authId.
 	default:
 		return fmt.Errorf("unknown SMS authentication mode")
 	}
-	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	req, err := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "secondary SMS send", 8<<20)
+	body, err := readAuthHTTPResponse(resp, "authSms", 8<<20)
 	if err != nil {
 		return err
 	}
-	log.DebugPrintf("Received send sms: %s", string(body))
+	log.DebugPrintf("Received auth sms: %s", string(body))
 
 	var re struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 		Data    struct {
 			Tips string `json:"tips"`
-		}
+		} `json:"data"`
 	}
 	err = json.Unmarshal(body, &re)
 	if err != nil {
 		return err
 	}
-	log.DebugPrintf("Parsed send sms: %+v", re)
-
-	if re.Code != 0 && re.Code != 75500401 {
-		log.Printf("authSms failed with code %d: %s", re.Code, re.Message)
+	log.DebugPrintf("Parsed auth sms: %+v", re)
+	if re.Code != 0 {
 		return fmt.Errorf("authSms failed with code %d: %s", re.Code, re.Message)
 	}
-
 	log.Printf("%s: %s", re.Message, re.Data.Tips)
 
 	return nil
 }
 
 func (s *Session) smsCheckCode(step authStep) (authStep, error) {
-	log.Println("Perform POST /passport/v1/auth/sms")
-
-	code, err := s.readVerificationCode(
-		"sms",
-		"输入短信验证码",
-		"请输入学校网关发送到已登记手机的验证码。",
-		true,
-	)
+	challenge := authchallenge.CodeChallenge{
+		Kind:                 authchallenge.CodeSMS,
+		Message:              "Please enter the SMS verification code:",
+		CanSkipSecondaryAuth: true,
+	}
+	response, err := s.handler().HandleCodeChallenge(challenge)
 	if err != nil {
-		return authStep{}, err
+		return authStep{}, fmt.Errorf("complete SMS challenge: %w", err)
 	}
 
-	code, skipSecondaryAuth := strings.CutPrefix(code, "$")
-	return s.secondarySMSCheckCodeImpl(step, code, skipSecondaryAuth)
-}
+	skipSecondaryAuth := "0"
+	if response.SkipSecondaryAuth {
+		skipSecondaryAuth = "1"
+	}
 
-func (s *Session) secondarySMSCheckCodeImpl(step authStep, code string, skipSecondaryAuth bool) (authStep, error) {
+	log.Println("Perform POST /passport/v1/auth/sms")
 	u := s.baseURL + "/passport/v1/auth/sms"
 	params := WithSharedParams(url.Values{
 		"action": {"checkcode"},
 	})
 
-	skipSecondaryAuthStr := "0"
-	if skipSecondaryAuth {
-		skipSecondaryAuthStr = "1"
-	}
-
 	var req *http.Request
 	switch step.SMSMode {
 	case smsWithoutAuthID:
 		form := url.Values{
-			"code":              {code},
-			"skipSecondaryAuth": {skipSecondaryAuthStr},
+			"code":              {response.Code},
+			"skipSecondaryAuth": {skipSecondaryAuth},
 		}
-		req, _ = http.NewRequest("POST", u+"?"+params.Encode(), strings.NewReader(form.Encode()))
+		req, err = http.NewRequest("POST", u+"?"+params.Encode(), strings.NewReader(form.Encode()))
+		if err != nil {
+			return authStep{}, err
+		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	case smsWithAuthID:
 		if step.AuthID == "" {
 			return authStep{}, fmt.Errorf("SMS authentication requires authId")
 		}
-		payload := map[string]any{
+		payload := map[string]interface{}{
 			"isPrevEffect":      false,
-			"code":              code,
-			"skipSecondaryAuth": skipSecondaryAuthStr,
-			"taskId":            "",
+			"code":              response.Code,
+			"skipSecondaryAuth": skipSecondaryAuth,
+			"taskId":            step.TaskID,
 			"authId":            step.AuthID,
 		}
-		bdy, _ := json.Marshal(payload)
-		req, _ = http.NewRequest("POST", u+"?"+params.Encode(), bytes.NewReader(bdy))
+		postBody, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return authStep{}, marshalErr
+		}
+		req, err = http.NewRequest("POST", u+"?"+params.Encode(), bytes.NewReader(postBody))
+		if err != nil {
+			return authStep{}, err
+		}
 		req.Header.Set("Content-Type", "application/json;charset=utf-8")
 	default:
 		return authStep{}, fmt.Errorf("unknown SMS authentication mode")
@@ -474,14 +665,14 @@ func (s *Session) secondarySMSCheckCodeImpl(step authStep, code string, skipSeco
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return authStep{}, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "secondary SMS verification", 8<<20)
+	body, err := readAuthHTTPResponse(resp, "smsCheckCode", 8<<20)
 	if err != nil {
 		return authStep{}, err
 	}
@@ -500,7 +691,6 @@ func (s *Session) secondarySMSCheckCodeImpl(step authStep, code string, skipSeco
 
 	if re.Code != 0 {
 		log.Printf("smsCheckCode failed with code %d: %s", re.Code, re.Message)
-		log.DebugPrintf("smsCheckCode failure response: %s", string(body))
 		return authStep{}, fmt.Errorf("smsCheckCode failed with code %d: %s", re.Code, re.Message)
 	}
 
@@ -511,19 +701,22 @@ func (s *Session) onlineInfo() (string, error) {
 	log.Println("Perform GET /passport/v1/user/onlineInfo")
 
 	u := s.baseURL + "/passport/v1/user/onlineInfo"
-	req, _ := http.NewRequest("GET", u+"?"+WithSharedParams(nil).Encode(), nil)
+	req, err := http.NewRequest("GET", u+"?"+WithSharedParams(nil).Encode(), nil)
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return "", err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "online information", 8<<20)
+	body, err := readAuthHTTPResponse(resp, "onlineInfo", 8<<20)
 	if err != nil {
 		return "", err
 	}
@@ -544,7 +737,6 @@ func (s *Session) onlineInfo() (string, error) {
 
 	if re.Code != 0 {
 		log.Printf("onlineInfo failed with code %d", re.Code)
-		log.DebugPrintf("onlineInfo failure response: %s", string(body))
 		return "", fmt.Errorf("onlineInfo failed with code %d", re.Code)
 	}
 
@@ -566,21 +758,27 @@ func (s *Session) ClientResource() ([]byte, error) {
 			},
 		},
 	}
-	bdy, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(bdy))
+	bdy, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(bdy))
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Content-Type", "application/json;charset=utf-8")
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "client resources", 32<<20)
+	body, err := readAuthHTTPResponse(resp, "clientResource", 32<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -596,18 +794,21 @@ func (s *Session) checkCode() ([]byte, error) {
 	params := WithSharedParams(url.Values{
 		"rnd": {strconv.FormatInt(time.Now().UnixMilli(), 10)},
 	})
-	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	req, err := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, err := readAuthHTTPResponse(resp, "captcha image", 16<<20)
+	body, err := readAuthHTTPResponse(resp, "checkCode", 16<<20)
 	if err != nil {
 		return nil, err
 	}

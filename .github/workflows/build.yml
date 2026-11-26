@@ -1,132 +1,112 @@
-name: Build
+name: CI
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
   push:
+    branches:
+      - "**"
     paths:
       - "**/*.go"
       - "go.mod"
       - "go.sum"
+      - "packaging/**"
+      - "scripts/**"
+      - "config.toml.example"
       - ".github/workflows/*.yml"
   pull_request:
-    types:
-      - opened
     paths:
       - "**/*.go"
       - "go.mod"
       - "go.sum"
+      - "packaging/**"
+      - "scripts/**"
+      - "config.toml.example"
+      - ".github/workflows/*.yml"
 
-permissions: write-all
+permissions:
+  contents: read
 
 jobs:
-  build:
+  test:
+    name: Format, Vet & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Linux Fyne test dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libayatana-appindicator3-dev
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  cli:
+    name: CLI (${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }})
+    needs: test
     strategy:
+      fail-fast: false
       matrix:
-        # Include amd64 on all platforms.
         goos: [windows, linux, darwin]
         goarch: [amd64, 386]
         exclude:
-          # Exclude i386 on darwin.
           - goarch: 386
             goos: darwin
         include:
-          # BEGIN Linux ARM 5 6 7
           - { goos: linux, goarch: arm, goarm: 7 }
           - { goos: linux, goarch: arm, goarm: 6 }
           - { goos: linux, goarch: arm, goarm: 5 }
-          # END Linux ARM 5 6 7
-          # BEGIN Other architectures
           - { goos: darwin, goarch: arm64 }
           - { goos: linux, goarch: arm64 }
           - { goos: linux, goarch: riscv64 }
           - { goos: windows, goarch: arm64 }
-          # BEGIN MIPS
           - { goos: linux, goarch: mips64 }
           - { goos: linux, goarch: mips64le }
           - { goos: linux, goarch: mipsle }
           - { goos: linux, goarch: mips }
-          # END MIPS
-          # END Other architectures
-      fail-fast: false
-
     runs-on: ubuntu-latest
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       GOARM: ${{ matrix.goarm }}
-      CGO_ENABLED: 0
-
+      CGO_ENABLED: "0"
     steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v3
-
-      - name: Show workflow information
-        id: get_filename
-        run: |
-          export _NAME=$GOOS-$GOARCH$GOARM
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, GOARM: $GOARM, RELEASE_NAME: $_NAME"
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
-
-      - name: Set up Go
-        uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: ^1.25
+          go-version-file: go.mod
+          cache: true
 
-      - name: Get project dependencies
-        run: go mod download
-
-      - name: Build
+      - name: Build CLI and stdio proxy helper
         run: |
-          mkdir -p build_assets
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            VERSION_FLAGS=""
-          else
-            VERSION_FLAGS="-X 'main.CommitID=${SHORT_SHA}'"
+          set -euo pipefail
+          ASSET_SUFFIX="${GOOS}-${GOARCH}${GOARM:-}"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          EXT=""
+          if [[ "${GOOS}" == "windows" ]]; then
+            EXT=".exe"
           fi
-          go build -v -o build_assets/nwafu-connect -trimpath \
-            -ldflags "-s -w -buildid= ${VERSION_FLAGS}" .
+          mkdir -p build_assets dist
+          go build -trimpath -ldflags "-s -w -buildid= -X main.nwafuConnectVersion=dev -X main.CommitID=${SHORT_SHA}" \
+            -o "build_assets/nwafu-connect${EXT}" .
+          go build -trimpath -ldflags "-s -w -buildid=" \
+            -o "build_assets/nwafu-connect-proxy${EXT}" ./cmd/nwafu-connect-proxy
+          cp config.toml.example build_assets/config.toml.example
+          (cd build_assets && zip -9r "../dist/nwafu-connect-${ASSET_SUFFIX}.zip" .)
 
-      - name: Rename Windows nwafu-connect
-        if: matrix.goos == 'windows'
-        run: |
-          cd ./build_assets || exit 1
-          mv nwafu-connect nwafu-connect.exe
-
-      - name: Upload artifact
-        if: github.event_name != 'release'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: nwafu-connect-${{ steps.get_filename.outputs.ASSET_NAME }}
-          path: build_assets/*
-
-      - name: Create ZIP archive
-        if: github.event_name == 'release' || (github.event_name == 'push' && contains(vars.NIGHTLY_RELEASE_ENABLED_BRANCHES, github.ref_name))
-        run: |
-          pushd build_assets || exit 1
-          zip -9vr ../nwafu-connect-$ASSET_NAME.zip .
-          popd || exit 1
-
-      - name: Upload release binary
-        if: github.event_name == 'release' || (github.event_name == 'push' && contains(vars.NIGHTLY_RELEASE_ENABLED_BRANCHES, github.ref_name))
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload --clobber ${{ github.event_name == 'release' && github.event.release.tag_name || 'nightly' }} nwafu-connect-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
-
-
-  nightly:
-    if: github.event_name != 'release' && github.event_name == 'push' && contains(vars.NIGHTLY_RELEASE_ENABLED_BRANCHES, github.ref_name)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v3
-
-      - name: Move nightly tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f nightly
-          git push origin nightly --force
+          name: ci-cli-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
+          path: dist/*.zip
+          if-no-files-found: error

@@ -23,14 +23,21 @@ import "unsafe"
 
 var lib = newBridge(nil)
 
+func goString(p *C.char) string {
+	if p == nil {
+		return ""
+	}
+	return C.GoString(p)
+}
+
 //export NcStart
 func NcStart(configJSON *C.char) *C.char {
-	return C.CString(lib.Start(C.GoString(configJSON)))
+	return C.CString(lib.Start(goString(configJSON)))
 }
 
 //export NcSubmit
 func NcSubmit(kind, value *C.char) *C.char {
-	return C.CString(lib.Submit(C.GoString(kind), C.GoString(value)))
+	return C.CString(lib.Submit(goString(kind), goString(value)))
 }
 
 //export NcStatus
@@ -45,6 +52,9 @@ func NcStop() *C.char {
 
 //export NcFree
 func NcFree(p *C.char) {
+	if p == nil {
+		return
+	}
 	C.free(unsafe.Pointer(p))
 }
 

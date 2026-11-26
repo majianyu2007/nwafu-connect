@@ -1,3 +1,5 @@
+//go:build android
+
 package tun
 
 import (
@@ -5,14 +7,18 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 
 	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/internal/ippool"
+	"github.com/majianyu2007/nwafu-connect/internal/zcdns"
 	"github.com/majianyu2007/nwafu-connect/log"
 	"golang.org/x/net/ipv4"
 )
 
 const MTU uint32 = 1400
+const maxInboundPacketSize = 1500
 
 type Stack struct {
 	endpoint *Endpoint
@@ -20,17 +26,18 @@ type Stack struct {
 }
 
 func (s *Stack) Run() error {
-	var err error
-	s.l3Conn, err = s.endpoint.client.NewL3Conn()
-	if err != nil {
-		return fmt.Errorf("create L3 tunnel connection: %w", err)
+	var connErr error
+	s.l3Conn, connErr = s.endpoint.client.NewL3Conn()
+	if connErr != nil {
+		return fmt.Errorf("create L3 tunnel connection: %w", connErr)
 	}
 	defer s.l3Conn.Close()
 
 	runErrors := make(chan error, 2)
+	// Read from VPN server and send to TUN stack
 	go func() {
+		buf := make([]byte, maxInboundPacketSize)
 		for {
-			buf := make([]byte, MTU)
 			n, err := s.l3Conn.Read(buf)
 			if err != nil {
 				runErrors <- fmt.Errorf("read from VPN server: %w", err)
@@ -40,18 +47,19 @@ func (s *Stack) Run() error {
 			log.DebugDumpHex(buf[:n])
 
 			if err := s.endpoint.Write(buf[:n]); err != nil {
-				runErrors <- fmt.Errorf("write to TUN interface: %w", err)
+				runErrors <- fmt.Errorf("write to TUN stack: %w", err)
 				return
 			}
 		}
 	}()
 
+	// Read from TUN stack and send to VPN server
 	go func() {
+		buf := make([]byte, maxInboundPacketSize)
 		for {
-			buf := make([]byte, MTU)
 			n, err := s.endpoint.Read(buf)
 			if err != nil {
-				runErrors <- fmt.Errorf("read from TUN interface: %w", err)
+				runErrors <- fmt.Errorf("read from TUN stack: %w", err)
 				return
 			}
 
@@ -59,17 +67,19 @@ func (s *Stack) Run() error {
 			if err != nil {
 				continue
 			}
+
+			// Filter out non-TCP/UDP packets otherwise error may occur
 			if header.Protocol != syscall.IPPROTO_TCP && header.Protocol != syscall.IPPROTO_UDP {
 				continue
 			}
 
-			n, err = s.l3Conn.Write(buf[:n])
+			written, err := s.l3Conn.Write(buf[:n])
 			if err != nil {
 				runErrors <- fmt.Errorf("write to VPN server: %w", err)
 				return
 			}
-			log.DebugPrintf("Send: wrote %d bytes", n)
-			log.DebugDumpHex(buf[:n])
+			log.DebugPrintf("Send: wrote %d bytes", written)
+			log.DebugDumpHex(buf[:written])
 		}
 	}()
 
@@ -84,6 +94,7 @@ type Endpoint struct {
 
 	tcpDialer *net.Dialer
 	udpDialer *net.Dialer
+	configMu  sync.RWMutex
 }
 
 func (ep *Endpoint) Write(buf []byte) error {
@@ -102,20 +113,23 @@ func (s *Stack) AddRoute(target string) error {
 	return nil
 }
 
-func NewStack(client client.Client) (*Stack, error) {
+func (s *Stack) SetupResolve(zcdns.LocalServer) {}
+
+func (s *Stack) SetupIPPool(*ippool.IPPool[[]client.DomainResource]) {}
+
+func NewStack(vpnClient client.Client, _ bool, _ bool, _ []client.IPResource) (*Stack, error) {
 	s := &Stack{}
 
 	s.endpoint = &Endpoint{
-		client: client,
+		client: vpnClient,
 	}
 
 	var err error
-	s.endpoint.ip, err = client.IP()
+	s.endpoint.ip, err = vpnClient.IP()
 	if err != nil {
 		return nil, err
 	}
 
-	// We need this dialer to bind to device otherwise packets will not be sent via TUN
 	s.endpoint.tcpDialer = &net.Dialer{
 		LocalAddr: &net.TCPAddr{
 			IP:   s.endpoint.ip,

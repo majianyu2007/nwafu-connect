@@ -17,61 +17,118 @@ import (
 
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/client/atrust/auth"
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 	"github.com/majianyu2007/nwafu-connect/internal/ipresource"
+	"github.com/majianyu2007/nwafu-connect/internal/keylog"
 	"github.com/majianyu2007/nwafu-connect/log"
+	"github.com/majianyu2007/nwafu-connect/underlay"
 	"inet.af/netaddr"
 )
+
+type SessionOptions struct {
+	Username     string
+	SID          string
+	DeviceID     string
+	MACAddresses []string
+	SignKey      string
+}
+
+type ClientOptions struct {
+	Session         SessionOptions
+	UnderlayDialer  client.UnderlayDialer
+	TLSKeyLogWriter io.Writer
+}
+
+type SetupOptions struct {
+	ServerAddress            string
+	ServerPort               int
+	LoginMethod              auth.LoginMethod
+	TOTPSecret               string
+	ClientData               []byte
+	ResourceData             []byte
+	BestNodesRefreshInterval time.Duration
+	ChallengeHandler         authchallenge.Handler
+	Prompter                 auth.Prompter
+	SessionRefreshInterval   time.Duration
+	SaveClientData           func([]byte) error
+	OnSessionInvalid         func(error)
+}
 
 type Client struct {
 	Username     string
 	SID          string
 	DeviceID     string
+	MACAddresses []string
 	ConnectionID string
 	SignKey      string
 
-	// Prompter, when set before Setup, answers interactive login steps
-	// (captcha, SMS/TOTP codes) instead of the terminal/browser pages.
-	Prompter auth.Prompter
+	sessionMu          sync.RWMutex
+	sessionErr         error
+	refreshDone        chan struct{}
+	nodesDone          chan struct{}
+	onSessionInvalid   func(error)
+	sessionInvalidOnce sync.Once
 
 	serverAddress   string
 	ipResources     []client.IPResource
 	resourceIndex   *ipresource.Index
-	domainResources map[string]client.DomainResourceSet
+	domainResources client.DomainResources
 	resources       []client.Resource
 	ipSet           *netaddr.IPSet
-	dnsResource     map[string]net.IP
+	dnsResource     map[string][]net.IP
 	dnsServer       string
+	dnsServers      []string
 
 	MajorNodeGroup   string
-	NodeGroups       map[string][]string
+	NodeGroups       map[string]NodeGroup
 	BestNodes        map[string]string
 	BestNodesRWMutex sync.RWMutex
 
-	ip net.IP // Client IP
+	ipMu sync.RWMutex
+	ip   net.IP // Client IP
+
+	ipUpdateMu      sync.RWMutex
+	ipUpdateHandler func(net.IP) error
 
 	l3Tunnel   *L3Tunnel
 	l3TunnelMu sync.Mutex
 
-	lifecycleCtx    context.Context
-	lifecycleCancel context.CancelFunc
-	closeOnce       sync.Once
+	lifecycleCtx     context.Context
+	lifecycleCancel  context.CancelFunc
+	closeOnce        sync.Once
+	underlayDialer   client.UnderlayDialer
+	tlsKeyLogWriter  io.Writer
+	tcpTunnelZeroRTT bool
 }
 
-func NewClient(username, sid, deviceID, signKey string) *Client {
+func NewClient(options ClientOptions) *Client {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &Client{
-		Username:        username,
-		SID:             sid,
-		DeviceID:        deviceID,
-		SignKey:         signKey,
+		Username:        options.Session.Username,
+		SID:             options.Session.SID,
+		DeviceID:        options.Session.DeviceID,
+		MACAddresses:    options.Session.MACAddresses,
+		SignKey:         options.Session.SignKey,
+		underlayDialer:  options.UnderlayDialer,
+		tlsKeyLogWriter: options.TLSKeyLogWriter,
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 	}
 }
 
+func (c *Client) canResume(resourceData []byte) bool {
+	return c.SID != "" && c.DeviceID != "" && resourceData != nil
+}
+
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		c.lifecycleCancel()
+		if c.refreshDone != nil {
+			<-c.refreshDone
+		}
+		if c.nodesDone != nil {
+			<-c.nodesDone
+		}
 		c.l3TunnelMu.Lock()
 		tunnel := c.l3Tunnel
 		c.l3TunnelMu.Unlock()
@@ -82,11 +139,35 @@ func (c *Client) Close() {
 }
 
 func (c *Client) IP() (net.IP, error) {
+	c.ipMu.RLock()
+	defer c.ipMu.RUnlock()
 	if c.ip == nil {
 		return nil, errors.New("IP not available")
 	}
 
-	return c.ip.To4(), nil
+	return append(net.IP(nil), c.ip.To4()...), nil
+}
+
+func (c *Client) setIP(ip net.IP) {
+	c.ipMu.Lock()
+	c.ip = append(net.IP(nil), ip...)
+	c.ipMu.Unlock()
+}
+
+func (c *Client) SetIPUpdateHandler(handler func(net.IP) error) {
+	c.ipUpdateMu.Lock()
+	c.ipUpdateHandler = handler
+	c.ipUpdateMu.Unlock()
+}
+
+func (c *Client) applyIPUpdate(ip net.IP) error {
+	c.ipUpdateMu.RLock()
+	handler := c.ipUpdateHandler
+	c.ipUpdateMu.RUnlock()
+	if handler == nil {
+		return errors.New("network stack does not support virtual IP updates")
+	}
+	return handler(append(net.IP(nil), ip...))
 }
 
 func (c *Client) IPSet() (*netaddr.IPSet, error) {
@@ -105,7 +186,7 @@ func (c *Client) IPResources() ([]client.IPResource, error) {
 	return c.ipResources, nil
 }
 
-func (c *Client) DomainResources() (map[string]client.DomainResourceSet, error) {
+func (c *Client) DomainResources() (client.DomainResources, error) {
 	if c.domainResources == nil {
 		return nil, errors.New("domain resources not available")
 	}
@@ -117,10 +198,10 @@ func (c *Client) Resources() ([]client.Resource, error) {
 	if c.resources == nil {
 		return nil, errors.New("resources not available")
 	}
-	return c.resources, nil
+	return append([]client.Resource(nil), c.resources...), nil
 }
 
-func (c *Client) DNSResource() (map[string]net.IP, error) {
+func (c *Client) DNSResource() (map[string][]net.IP, error) {
 	if c.dnsResource == nil {
 		return nil, errors.New("DNS resource not available")
 	}
@@ -136,6 +217,24 @@ func (c *Client) DNSServer() (string, error) {
 	return c.dnsServer, nil
 }
 
+func (c *Client) DNSServers() ([]string, error) {
+	if len(c.dnsServers) == 0 {
+		return nil, errors.New("DNS servers not available")
+	}
+	return append([]string(nil), c.dnsServers...), nil
+}
+
+func formatServerHost(serverAddress string, serverPort int) string {
+	host := strings.Trim(strings.TrimSpace(serverAddress), "[]")
+	if serverPort == 443 {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(serverPort))
+}
+
 func randHex(n int) string {
 	numBytes := (n + 1) / 2
 	b := make([]byte, numBytes)
@@ -145,20 +244,25 @@ func randHex(n int) string {
 	return strings.ToUpper(hex.EncodeToString(b)[:n])
 }
 
-func formatServerHost(serverAddress string, serverPort int) string {
-	host := strings.Trim(strings.TrimSpace(serverAddress), "[]")
-	if serverPort == 443 {
-		if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
-			return "[" + host + "]"
-		}
-		return host
-	}
-	return net.JoinHostPort(host, strconv.Itoa(serverPort))
-}
-
-func GetAuthInfoList(serverAddress string, serverPort int) ([]auth.AuthInfo, error) {
+func GetAuthInfoList(serverAddress string, serverPort int, bindInterface string, autoDetectInterface bool, localDNSServer, debugTLSLogFile string) (authInfo []auth.AuthInfo, err error) {
 	serverHost := formatServerHost(serverAddress, serverPort)
-	sess := auth.NewSession(serverHost)
+	dialer, err := newUnderlayDialer(bindInterface, autoDetectInterface, localDNSServer)
+	if err != nil {
+		return nil, err
+	}
+	defer dialer.Close()
+	tlsKeyLogWriter, err := keylog.Open(debugTLSLogFile)
+	if err != nil {
+		return nil, fmt.Errorf("open TLS key log: %w", err)
+	}
+	defer func() {
+		if tlsKeyLogWriter != nil {
+			if closeErr := tlsKeyLogWriter.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close TLS key log: %w", closeErr))
+			}
+		}
+	}()
+	sess := auth.NewSession(serverHost, tlsKeyLogWriter, dialer.DialContext)
 	return sess.GetAuthInfoList()
 }
 
@@ -176,7 +280,7 @@ func (c *Client) NewL3Conn() (io.ReadWriteCloser, error) {
 	return tunnel.NewL3Conn()
 }
 
-func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted bool) error {
+func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted bool, bindInterface string, autoDetectInterface bool, localDNSServer, debugTLSLogFile string) (err error) {
 	var clientAuthData auth.ClientAuthData
 	if authData != nil {
 		err := json.Unmarshal(authData, &clientAuthData)
@@ -190,15 +294,35 @@ func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted b
 	if clientAuthData.DeviceID == "" {
 		clientAuthData.DeviceID = strings.ToLower(randHex(32))
 	}
+	if len(clientAuthData.MACAddresses) == 0 {
+		clientAuthData.MACAddresses = []string{randMACAddress()}
+	}
 
 	serverHost := formatServerHost(serverAddress, serverPort)
-	sess := auth.NewSession(serverHost)
+	dialer, err := newUnderlayDialer(bindInterface, autoDetectInterface, localDNSServer)
+	if err != nil {
+		return err
+	}
+	defer dialer.Close()
+	tlsKeyLogWriter, err := keylog.Open(debugTLSLogFile)
+	if err != nil {
+		return fmt.Errorf("open TLS key log: %w", err)
+	}
+	defer func() {
+		if tlsKeyLogWriter != nil {
+			if closeErr := tlsKeyLogWriter.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close TLS key log: %w", closeErr))
+			}
+		}
+	}()
+	sess := auth.NewSession(serverHost, tlsKeyLogWriter, dialer.DialContext)
 
 	if _, err := sess.Login(nil, auth.LoginOptions{
-		DeviceID: clientAuthData.DeviceID,
-		Cookies:  clientAuthData.Cookies,
+		DeviceID:     clientAuthData.DeviceID,
+		MACAddresses: clientAuthData.MACAddresses,
+		Cookies:      clientAuthData.Cookies,
 	}); err != nil {
-		return fmt.Errorf("restore aTrust session for device trust update: %w", err)
+		return err
 	}
 	result, err := sess.QueryDevice()
 	if err != nil {
@@ -211,134 +335,201 @@ func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted b
 			return nil
 		}
 		return sess.TrustDevice([]string{result.SelfID})
-	} else {
-		if !result.DeviceTrusted {
-			log.Println("Device already untrusted, skipping")
-			return nil
-		}
-		return sess.UntrustDevice([]string{result.SelfID})
 	}
+	if !result.DeviceTrusted {
+		log.Println("Device already untrusted, skipping")
+		return nil
+	}
+	return sess.UntrustDevice([]string{result.SelfID})
 }
 
-func (c *Client) Setup(serverAddress string, serverPort int, username, password, totpSecret, phone, loginDomain, authType, graphCodeFile, qyWechatQRCodeFile string, qyWechatQRCodeTerminal, qyWechatQRCodeBrowser bool, authData, resourceData []byte, updateBestNodesInterval int) ([]byte, error) {
-	c.serverAddress = serverAddress
+func (c *Client) Setup(options SetupOptions) ([]byte, error) {
+	return c.SetupContext(context.Background(), options)
+}
 
-	if c.SID != "" && c.DeviceID != "" && resourceData != nil {
+func (c *Client) SetupContext(ctx context.Context, options SetupOptions) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	setupCtx, cancelSetup := context.WithCancel(ctx)
+	defer cancelSetup()
+	stopLifecycleCancellation := context.AfterFunc(c.lifecycleCtx, cancelSetup)
+	defer stopLifecycleCancellation()
+	if err := setupCtx.Err(); err != nil {
+		return nil, err
+	}
+	if c.underlayDialer == nil {
+		return nil, errors.New("underlay dialer is required")
+	}
+	c.serverAddress = options.ServerAddress
+	c.onSessionInvalid = options.OnSessionInvalid
+
+	var clientAuthData auth.ClientAuthData
+	if options.ClientData != nil {
+		if err := json.Unmarshal(options.ClientData, &clientAuthData); err != nil {
+			log.Println("Error parsing client data:", err)
+			return nil, err
+		}
+	}
+	log.DebugPrintf("Given auth data: %+v", clientAuthData)
+	if clientAuthData.DeviceID == "" && c.DeviceID != "" {
+		clientAuthData.DeviceID = c.DeviceID
+	}
+	if len(clientAuthData.MACAddresses) == 0 && len(c.MACAddresses) > 0 {
+		clientAuthData.MACAddresses = c.MACAddresses
+	}
+
+	authServerHost := formatServerHost(options.ServerAddress, options.ServerPort)
+	sess := auth.NewSessionContext(setupCtx, authServerHost, c.tlsKeyLogWriter, c.underlayDialer.DialContext)
+	serverVersionInfo, manifestErr := sess.ServerVersionInfo()
+	serverVersionInfo, err := resolveServerVersionInfo(clientAuthData.ServerVersionInfo, serverVersionInfo, manifestErr)
+	if err != nil {
+		return nil, err
+	}
+	if manifestErr != nil {
+		log.Printf("Failed to refresh aTrust server manifest, using cached version: %v", manifestErr)
+	}
+	clientAuthData.ServerVersionInfo = serverVersionInfo
+	parsedServerVersion, err := auth.ParseServerVersionInfo(serverVersionInfo)
+	if err != nil {
+		return nil, err
+	}
+	c.tcpTunnelZeroRTT = parsedServerVersion.TCPTunnelZeroRTT()
+	log.Printf("aTrust TCP tunnel zero-RTT: %t", c.tcpTunnelZeroRTT)
+
+	resourceData := options.ResourceData
+	if c.canResume(resourceData) {
 		log.Println("Skipping login")
 
 		c.ConnectionID = buildConnectionID(c.DeviceID)
 		if c.SignKey == "" {
 			c.SignKey = randHex(64)
 		}
+		sess.Restore(c.DeviceID, c.SID, clientAuthData.Cookies)
 	} else {
-		var clientAuthData auth.ClientAuthData
-		if authData != nil {
-			err := json.Unmarshal(authData, &clientAuthData)
-			if err != nil {
-				log.Println("Error parsing client data:", err)
-				return nil, err
-			}
-		}
-		log.DebugPrintf("Given auth data: %+v", clientAuthData)
-
 		if clientAuthData.DeviceID == "" {
 			clientAuthData.DeviceID = strings.ToLower(randHex(32))
 		}
 		c.DeviceID = clientAuthData.DeviceID
 		c.ConnectionID = buildConnectionID(c.DeviceID)
 		c.SignKey = randHex(64)
+		if len(clientAuthData.MACAddresses) == 0 {
+			clientAuthData.MACAddresses = []string{randMACAddress()}
+		}
+		c.MACAddresses = clientAuthData.MACAddresses
 
-		serverHost := formatServerHost(serverAddress, serverPort)
-		sess := auth.NewSession(serverHost)
-
-		var err error
-		var loginMethod auth.LoginMethod
-		switch authType {
-		case "auth/psw":
-			loginMethod = auth.PasswordLogin{
-				Username:      username,
-				Password:      password,
-				Domain:        loginDomain,
-				GraphCodeFile: graphCodeFile,
-			}
-		case "auth/smsCheckCode":
-			loginMethod = auth.SMSLogin{
-				Phone:         phone,
-				Domain:        loginDomain,
-				GraphCodeFile: graphCodeFile,
-			}
-		case "auth/qywechat":
-			loginMethod = auth.QYWechatLogin{
-				Domain:      loginDomain,
-				QRCodeFile:  qyWechatQRCodeFile,
-				PrintQRCode: qyWechatQRCodeTerminal,
-				OpenBrowser: qyWechatQRCodeBrowser,
-			}
-		case "":
+		if options.LoginMethod == nil {
 			log.Println("No auth type specified, trying to skip auth")
-		default:
-			return nil, fmt.Errorf("unsupported auth type: %s", authType)
 		}
 
-		loginResult, err := sess.Login(loginMethod, auth.LoginOptions{
-			DeviceID:   c.DeviceID,
-			Cookies:    clientAuthData.Cookies,
-			TOTPSecret: totpSecret,
-			Prompter:   c.Prompter,
+		loginResult, err := sess.Login(options.LoginMethod, auth.LoginOptions{
+			DeviceID:         c.DeviceID,
+			MACAddresses:     c.MACAddresses,
+			Cookies:          clientAuthData.Cookies,
+			TOTPSecret:       options.TOTPSecret,
+			ChallengeHandler: options.ChallengeHandler,
+			Prompter:         options.Prompter,
 		})
 		if err != nil {
 			log.Println("Login error:", err)
 			return nil, err
 		}
 		c.Username = loginResult.Username
-		c.SID = loginResult.SID
-		if c.SID == "" {
-			return nil, errors.New("login succeeded without an aTrust session ID")
-		}
-		clientAuthData.Cookies = loginResult.Cookies
 
 		resourceData, err = sess.ClientResource()
 		if err != nil {
 			log.Println("Error fetching client resource:", err)
 			return nil, err
 		}
-
-		authData, err = json.Marshal(clientAuthData)
-		if err != nil {
-			return nil, fmt.Errorf("encode client authentication data: %w", err)
-		}
+	}
+	snapshot, err := sess.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	c.setSessionSID(snapshot.SID, nil)
+	clientAuthData.DeviceID = c.DeviceID
+	clientAuthData.Cookies = snapshot.Cookies
+	authData, err := json.Marshal(clientAuthData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal client data: %w", err)
 	}
 
-	err := c.parseResource(resourceData)
+	err = c.parseResource(resourceData)
 	if err != nil {
 		return nil, err
 	}
 
 	log.DebugPrintf("SID: %s, DeviceID: %s, ConnectionID: %s, SignKey: %s", c.SID, c.DeviceID, c.ConnectionID, c.SignKey)
 
-	c.BestNodes = getBestNodes(c.NodeGroups)
-
-	err = c.getIP()
-	if err != nil {
+	c.BestNodes = getBestNodes(setupCtx, c.NodeGroups, c.underlayDialer.DialContext, c.tlsKeyLogWriter)
+	if err := setupCtx.Err(); err != nil {
 		return nil, err
 	}
 
+	err = c.getIP(setupCtx)
+	if err != nil {
+		return nil, err
+	}
+	c.underlayDialer.ExcludeIP(c.ip)
+
+	if err := setupCtx.Err(); err != nil {
+		return nil, err
+	}
 	l3Tunnel, err := NewL3Tunnel(c)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create L3 tunnel: %w", err)
+		return nil, fmt.Errorf("failed to create L3 tunnel: %v", err)
 	}
 	c.l3TunnelMu.Lock()
 	c.l3Tunnel = l3Tunnel
 	c.l3TunnelMu.Unlock()
+	if options.SaveClientData != nil {
+		if err := options.SaveClientData(authData); err != nil {
+			return nil, fmt.Errorf("failed to save client data: %w", err)
+		}
+	}
+	if options.SessionRefreshInterval > 0 {
+		c.startSessionRefresh(sess.Refresh, clientAuthData, options.SaveClientData, options.SessionRefreshInterval)
+	}
 
-	if updateBestNodesInterval > 0 {
-		go c.updateBestNodes(c.lifecycleCtx, updateBestNodesInterval)
+	if options.BestNodesRefreshInterval > 0 {
+		c.nodesDone = make(chan struct{})
+		go func() {
+			defer close(c.nodesDone)
+			c.updateBestNodes(c.lifecycleCtx, options.BestNodesRefreshInterval)
+		}()
 	}
 
 	return authData, nil
 }
 
+func newUnderlayDialer(bindInterface string, autoDetectInterface bool, localDNSServer string) (*underlay.Dialer, error) {
+	return underlay.New(underlay.Options{
+		InterfaceName:  bindInterface,
+		AutoDetect:     autoDetectInterface,
+		LocalDNSServer: localDNSServer,
+	})
+}
+
+func resolveServerVersionInfo(cached, fetched []byte, fetchErr error) ([]byte, error) {
+	if fetchErr == nil {
+		return fetched, nil
+	}
+	if len(cached) == 0 {
+		return nil, fmt.Errorf("failed to acquire aTrust server manifest: %w", fetchErr)
+	}
+	return cached, nil
+}
+
 func buildConnectionID(deviceID string) string {
 	sum := md5.Sum([]byte(deviceID))
 	return fmt.Sprintf("%X-%d", sum, time.Now().UnixMicro())
+}
+
+func randMACAddress() string {
+	mac := make([]byte, 6)
+	if _, err := rand.Read(mac); err != nil {
+		panic(err)
+	}
+	mac[0] = mac[0]&0xfe | 0x02 // locally administered, unicast
+	return net.HardwareAddr(mac).String()
 }

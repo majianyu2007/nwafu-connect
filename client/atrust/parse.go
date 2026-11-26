@@ -1,7 +1,6 @@
 package atrust
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -19,18 +18,7 @@ type ClientResource struct {
 		AppList struct {
 			Data struct {
 				AppInfo []struct {
-					Apps []struct {
-						ID          string
-						NodeGroupID string
-						Name        string
-						Description string
-						AddressList []struct {
-							Protocol string
-							Port     string
-							Host     string
-							IP       []string
-						}
-					}
+					Apps []resourceApp
 				}
 
 				Config struct {
@@ -53,6 +41,14 @@ type ClientResource struct {
 		SDPPolicy struct {
 			Data struct {
 				ClientOption struct {
+					Tun0RTT struct {
+						MaxIdleConnNum    int64 `json:"maxIdleConnNum"`
+						MaxIdleLingerTime int64 `json:"maxIdleLingerTime"`
+						MinIdleConnNum    int64 `json:"minIdleConnNum"`
+						Enable            bool  `json:"enable"`
+						PreConnNum        int64 `json:"preConnNum"`
+					} `json:"tun0rtt"`
+
 					DNSOption struct {
 						FirstDNS  string
 						SecondDNS string
@@ -68,43 +64,75 @@ type ClientResource struct {
 	}
 }
 
-func parseResourcePort(raw string) (int, int, error) {
-	raw = strings.TrimSpace(raw)
-	parts := strings.Split(raw, "-")
-	if len(parts) < 1 || len(parts) > 2 {
-		return 0, 0, fmt.Errorf("invalid port range %q", raw)
-	}
-	minimum, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid port %q", raw)
-	}
-	maximum := minimum
-	if len(parts) == 2 {
-		maximum, err = strconv.Atoi(strings.TrimSpace(parts[1]))
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid port range %q", raw)
-		}
-	}
-	if minimum < 1 || maximum > 65535 || minimum > maximum {
-		return 0, 0, fmt.Errorf("port range out of bounds %q", raw)
-	}
-	return minimum, maximum, nil
+type resourceApp struct {
+	ID              string
+	Name            string
+	Description     string
+	NodeGroupID     string
+	AccessModel     string
+	EnableTCPPrefL3 bool
+	AddrPretend     any `json:"addrPretend"`
+	AddressList     []resourceAddress
 }
 
-func normalizeNodeAddress(rawAddress, serverAddress string) (string, bool) {
-	address := strings.TrimSpace(rawAddress)
-	if address == "{{sdpcHost}}" {
-		address = strings.TrimSpace(serverAddress)
+type resourceAddress struct {
+	Protocol string
+	Port     string
+	Host     string
+	IP       []string
+}
+
+func resourceAddrPretend(value any) bool {
+	if value, ok := value.(bool); ok {
+		return value
 	}
+	return true
+}
+
+func parseResourcePort(portStr string) (int, int, bool) {
+	portStr = strings.TrimSpace(portStr)
+	if strings.Contains(portStr, "-") {
+		ports := strings.Split(portStr, "-")
+		if len(ports) != 2 {
+			return 0, 0, false
+		}
+		portMin, err := strconv.Atoi(strings.TrimSpace(ports[0]))
+		if err != nil {
+			return 0, 0, false
+		}
+		portMax, err := strconv.Atoi(strings.TrimSpace(ports[1]))
+		if err != nil {
+			return 0, 0, false
+		}
+		if portMin < 1 || portMax > 65535 || portMin > portMax {
+			return 0, 0, false
+		}
+		return portMin, portMax, true
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, 0, false
+	}
+	return port, port, true
+}
+
+func normalizeNodeAddress(raw, serverAddress string) (string, bool) {
+	address := strings.TrimSpace(raw)
 	if address == "" {
 		return "", false
 	}
-	if host, portText, err := net.SplitHostPort(address); err == nil {
-		port, portErr := strconv.Atoi(portText)
-		if host == "" || portErr != nil || port < 1 || port > 65535 {
+	if strings.Contains(address, "{{sdpcHost}}") {
+		if serverAddress == "" {
 			return "", false
 		}
-		return net.JoinHostPort(host, portText), true
+		address = strings.ReplaceAll(address, "{{sdpcHost}}", serverAddress)
+	}
+	if host, portText, err := net.SplitHostPort(address); err == nil {
+		port, err := strconv.Atoi(portText)
+		if err != nil || port < 1 || port > 65535 || strings.TrimSpace(host) == "" {
+			return "", false
+		}
+		return net.JoinHostPort(strings.TrimSpace(host), strconv.Itoa(port)), true
 	}
 	if ip := net.ParseIP(strings.Trim(address, "[]")); ip != nil {
 		return net.JoinHostPort(ip.String(), "441"), true
@@ -119,229 +147,300 @@ func (c *Client) parseResource(resource []byte) error {
 	log.Println("Parsing resource...")
 
 	var clientResource ClientResource
-	err := json.Unmarshal(resource, &clientResource)
-	if err != nil {
+	if err := json.Unmarshal(resource, &clientResource); err != nil {
 		return err
 	}
 
 	ipSetBuilder := netaddr.IPSetBuilder{}
 	c.ipResources = make([]client.IPResource, 0)
-	c.domainResources = make(map[string]client.DomainResourceSet)
-	c.dnsResource = make(map[string]net.IP)
+	c.domainResources = make(client.DomainResources)
 	c.resources = make([]client.Resource, 0)
+	c.dnsResource = make(map[string][]net.IP)
 
 	for _, app := range clientResource.Data.AppList.Data.AppInfo {
 		for _, appItem := range app.Apps {
-			parsedResource := client.Resource{Name: appItem.Name, Description: appItem.Description}
+			if appItem.AccessModel != "" && !strings.EqualFold(appItem.AccessModel, "L3VPN") {
+				log.DebugPrintf("Ignore unsupported aTrust access model %q for app %s", appItem.AccessModel, appItem.ID)
+				continue
+			}
+			addrPretend := resourceAddrPretend(appItem.AddrPretend)
+			portalAddresses := make([]client.ResourceAddress, 0, len(appItem.AddressList))
+
 			for _, address := range appItem.AddressList {
 				protocol := strings.ToLower(strings.TrimSpace(address.Protocol))
 				if protocol != "tcp" && protocol != "udp" && protocol != "all" {
 					continue
 				}
+				portMin, portMax, ok := parseResourcePort(address.Port)
+				if !ok {
+					log.DebugPrintf("invalid port: %s", address.Port)
+					continue
+				}
+
 				hostStr := strings.TrimSpace(address.Host)
 				if hostStr == "" {
-					log.DebugPrintln("resource host is empty, skipping")
-					continue
-				}
-				portMin, portMax, portErr := parseResourcePort(address.Port)
-				if portErr != nil {
-					log.DebugPrintf("%v", portErr)
-					continue
-				}
-				var rangeMin, rangeMax net.IP
-				isRange := false
-				if ipParts := strings.Split(hostStr, "-"); len(ipParts) == 2 {
-					candidateMin := net.ParseIP(strings.TrimSpace(ipParts[0]))
-					candidateMax := net.ParseIP(strings.TrimSpace(ipParts[1]))
-					if candidateMin != nil && candidateMax != nil {
-						if candidateMin.To4() == nil || candidateMax.To4() == nil {
-							log.DebugPrintf("IPv6 or mixed address range found: %s, skipping", hostStr)
-							continue
-						}
-						if bytes.Compare(candidateMin.To4(), candidateMax.To4()) > 0 {
-							log.DebugPrintf("invalid reversed IP range: %s", hostStr)
-							continue
-						}
-						rangeMin, rangeMax, isRange = candidateMin, candidateMax, true
-					}
-				}
-
-				hostIP := net.ParseIP(hostStr)
-				_, ipNet, cidrErr := net.ParseCIDR(hostStr)
-				if hostIP != nil && hostIP.To4() == nil {
-					log.DebugPrintf("IPv6 address found: %s, skipping", hostStr)
-					continue
-				}
-				if cidrErr == nil && ipNet.IP.To4() == nil {
-					log.DebugPrintf("IPv6 CIDR found: %s, skipping", hostStr)
-					continue
-				}
-				if strings.Contains(hostStr, ":") {
-					log.DebugPrintf("unsupported resource host: %s", hostStr)
 					continue
 				}
 
-				isDomain := hostIP == nil && cidrErr != nil && !isRange
-				domainKey := ""
-				if isDomain {
-					domainKey = strings.ToLower(strings.TrimSuffix(hostStr, "."))
-					if strings.HasPrefix(domainKey, "*.") {
-						domainKey = strings.TrimPrefix(domainKey, "*")
-					}
-					if domainKey == "" || strings.Contains(domainKey, "*") {
-						log.DebugPrintf("unsupported wildcard domain: %s", hostStr)
+				isDomain := false
+				recordedHost := ""
+
+				if ip := net.ParseIP(hostStr); ip != nil {
+					ip4 := ip.To4()
+					if ip4 == nil {
+						log.DebugPrintf("IPv6 address found: %s, skipping", hostStr)
 						continue
 					}
-				}
-
-				parsedResource.Addresses = append(parsedResource.Addresses, client.ResourceAddress{
-					Host:     hostStr,
-					PortMin:  portMin,
-					PortMax:  portMax,
-					Protocol: protocol,
-				})
-				switch {
-				case hostIP != nil:
-					ipSetBuilder.Add(netaddr.MustParseIP(hostIP.String()))
+					addr, ok := netaddr.FromStdIP(ip4)
+					if ok {
+						ipSetBuilder.Add(addr)
+					}
 					c.ipResources = append(c.ipResources, client.IPResource{
-						IPMin:       hostIP,
-						IPMax:       hostIP,
-						PortMin:     portMin,
-						PortMax:     portMax,
-						Protocol:    protocol,
-						AppID:       appItem.ID,
-						NodeGroupID: appItem.NodeGroupID,
+						IPMin:           ip4.To16(),
+						IPMax:           ip4.To16(),
+						PortMin:         portMin,
+						PortMax:         portMax,
+						Protocol:        protocol,
+						AppID:           appItem.ID,
+						NodeGroupID:     appItem.NodeGroupID,
+						EnableTCPPrefL3: appItem.EnableTCPPrefL3,
 					})
-					log.DebugPrintf("Add IP: %s, Port range: %d ~ %d, [%s]", hostIP, portMin, portMax, protocol)
-				case cidrErr == nil:
+					recordedHost = ip4.String()
+					log.DebugPrintf("Add IP: %s, Port range: %d ~ %d, [%s]", ip4, portMin, portMax, protocol)
+				} else if _, ipNet, cidrErr := net.ParseCIDR(hostStr); cidrErr == nil {
 					ip4 := ipNet.IP.To4()
+					if ip4 == nil {
+						log.DebugPrintf("IPv6 CIDR found: %s, skipping", hostStr)
+						continue
+					}
 					ipMax4 := make(net.IP, len(ip4))
 					for i := range ip4 {
 						ipMax4[i] = ip4[i] | ^ipNet.Mask[i]
 					}
-					ipSetBuilder.AddPrefix(netaddr.MustParseIPPrefix(hostStr))
+					if prefix, parseErr := netaddr.ParseIPPrefix(hostStr); parseErr == nil {
+						ipSetBuilder.AddPrefix(prefix)
+					}
 					c.ipResources = append(c.ipResources, client.IPResource{
-						IPMin:       ip4.To16(),
-						IPMax:       ipMax4.To16(),
-						PortMin:     portMin,
-						PortMax:     portMax,
-						Protocol:    protocol,
-						AppID:       appItem.ID,
-						NodeGroupID: appItem.NodeGroupID,
+						IPMin:           ip4.To16(),
+						IPMax:           ipMax4.To16(),
+						PortMin:         portMin,
+						PortMax:         portMax,
+						Protocol:        protocol,
+						AppID:           appItem.ID,
+						NodeGroupID:     appItem.NodeGroupID,
+						EnableTCPPrefL3: appItem.EnableTCPPrefL3,
 					})
+					recordedHost = hostStr
 					log.DebugPrintf("Add CIDR: %s (%s ~ %s), Port range: %d ~ %d, [%s]", hostStr, ip4, ipMax4, portMin, portMax, protocol)
-				case isRange:
-					ipSetBuilder.AddRange(netaddr.IPRangeFrom(netaddr.MustParseIP(rangeMin.String()), netaddr.MustParseIP(rangeMax.String())))
-					c.ipResources = append(c.ipResources, client.IPResource{
-						IPMin:       rangeMin,
-						IPMax:       rangeMax,
-						PortMin:     portMin,
-						PortMax:     portMax,
-						Protocol:    protocol,
-						AppID:       appItem.ID,
-						NodeGroupID: appItem.NodeGroupID,
-					})
-					log.DebugPrintf("Add IP range: %s ~ %s, Port range: %d ~ %d, [%s]", rangeMin, rangeMax, portMin, portMax, protocol)
-				default:
-					c.domainResources[domainKey] = append(c.domainResources[domainKey], client.DomainResource{
-						PortMin:     portMin,
-						PortMax:     portMax,
-						Protocol:    protocol,
-						AppID:       appItem.ID,
-						NodeGroupID: appItem.NodeGroupID,
-					})
-					log.DebugPrintf("Add domain: %s, Port range: %d ~ %d, [%s]", hostStr, portMin, portMax, protocol)
-				}
-
-				// Handle DNS rules
-				if address.IP != nil {
-					if !isDomain {
-						log.DebugPrintln("IP address found, but no domain name, skipping")
+				} else if ipParts := strings.Split(hostStr, "-"); len(ipParts) == 2 &&
+					net.ParseIP(strings.TrimSpace(ipParts[0])) != nil &&
+					net.ParseIP(strings.TrimSpace(ipParts[1])) != nil {
+					ipMin := net.ParseIP(strings.TrimSpace(ipParts[0])).To4()
+					ipMax := net.ParseIP(strings.TrimSpace(ipParts[1])).To4()
+					if ipMin == nil || ipMax == nil {
+						log.DebugPrintf("IPv6 range found: %s, skipping", hostStr)
 						continue
 					}
+					start, startOK := ipresource.IPv4Uint32(ipMin)
+					end, endOK := ipresource.IPv4Uint32(ipMax)
+					if !startOK || !endOK || start > end {
+						log.DebugPrintf("invalid IP range: %s", hostStr)
+						continue
+					}
+					fromAddr, ok1 := netaddr.FromStdIP(ipMin)
+					toAddr, ok2 := netaddr.FromStdIP(ipMax)
+					if ok1 && ok2 {
+						ipSetBuilder.AddRange(netaddr.IPRangeFrom(fromAddr, toAddr))
+					}
+					c.ipResources = append(c.ipResources, client.IPResource{
+						IPMin:           ipMin.To16(),
+						IPMax:           ipMax.To16(),
+						PortMin:         portMin,
+						PortMax:         portMax,
+						Protocol:        protocol,
+						AppID:           appItem.ID,
+						NodeGroupID:     appItem.NodeGroupID,
+						EnableTCPPrefL3: appItem.EnableTCPPrefL3,
+					})
+					recordedHost = ipMin.String() + "-" + ipMax.String()
+					log.DebugPrintf("Add IP range: %s ~ %s, Port range: %d ~ %d, [%s]", ipMin, ipMax, portMin, portMax, protocol)
+				} else {
+					if strings.ContainsAny(hostStr, ":/ \t\r\n") {
+						log.DebugPrintf("invalid domain host: %s", hostStr)
+						continue
+					}
+					domainKey := normalizePolicyDomain(hostStr)
+					if domainKey == "" {
+						log.DebugPrintf("invalid wildcard domain: %s", hostStr)
+						continue
+					}
+					isDomain = true
+					c.domainResources[domainKey] = append(c.domainResources[domainKey], client.DomainResource{
+						PortMin:         portMin,
+						PortMax:         portMax,
+						Protocol:        protocol,
+						AppID:           appItem.ID,
+						NodeGroupID:     appItem.NodeGroupID,
+						EnableTCPPrefL3: appItem.EnableTCPPrefL3,
+						AddrPretend:     addrPretend,
+					})
+					recordedHost = strings.TrimSuffix(strings.ToLower(hostStr), ".")
+					log.DebugPrintf("Add domain: %s, Port range: %d ~ %d, [%s]", domainKey, portMin, portMax, protocol)
+				}
 
+				if recordedHost != "" {
+					portalAddresses = append(portalAddresses, client.ResourceAddress{
+						Host:     recordedHost,
+						PortMin:  portMin,
+						PortMax:  portMax,
+						Protocol: protocol,
+					})
+				}
+
+				if isDomain && len(address.IP) > 0 {
+					domainKey := normalizePolicyDomain(hostStr)
+					if domainKey == "" || strings.HasPrefix(domainKey, ".") {
+						continue
+					}
 					seenIPs := make(map[string]struct{}, len(address.IP))
+					for _, existing := range c.dnsResource[domainKey] {
+						seenIPs[existing.String()] = struct{}{}
+					}
 					for _, ipStr := range address.IP {
-						ip := net.ParseIP(strings.TrimSpace(ipStr))
-						if ip == nil {
-							log.DebugPrintf("Invalid IP: %s", ipStr)
+						parsedIP := net.ParseIP(strings.TrimSpace(ipStr))
+						if parsedIP == nil {
 							continue
 						}
-						ip4 := ip.To4()
+						ip4 := parsedIP.To4()
 						if ip4 == nil {
-							log.DebugPrintf("IPv6 address found: %s, skipping", ip)
 							continue
 						}
-						key := ip4.String()
-						if _, exists := seenIPs[key]; exists {
+						ipKey := ip4.String()
+						if _, dup := seenIPs[ipKey]; dup {
 							continue
 						}
-						seenIPs[key] = struct{}{}
-						ipSetBuilder.Add(netaddr.MustParseIP(key))
+						seenIPs[ipKey] = struct{}{}
+						c.dnsResource[domainKey] = append(c.dnsResource[domainKey], ip4)
+						if addr, ok := netaddr.FromStdIP(ip4); ok {
+							ipSetBuilder.Add(addr)
+						}
 						c.ipResources = append(c.ipResources, client.IPResource{
-							IPMin:       ip4.To16(),
-							IPMax:       ip4.To16(),
-							PortMin:     portMin,
-							PortMax:     portMax,
-							Protocol:    protocol,
-							AppID:       appItem.ID,
-							NodeGroupID: appItem.NodeGroupID,
+							IPMin:           ip4.To16(),
+							IPMax:           ip4.To16(),
+							PortMin:         portMin,
+							PortMax:         portMax,
+							Protocol:        protocol,
+							AppID:           appItem.ID,
+							NodeGroupID:     appItem.NodeGroupID,
+							EnableTCPPrefL3: appItem.EnableTCPPrefL3,
 						})
-						if _, exists := c.dnsResource[domainKey]; !exists {
-							c.dnsResource[domainKey] = append(net.IP(nil), ip4...)
-						}
-						log.DebugPrintf("Add DNS rule: %s -> %s", hostStr, ip4)
+						log.DebugPrintf("Add DNS: %s -> %s", domainKey, ip4)
 					}
 				}
 			}
-			if len(parsedResource.Addresses) > 0 {
-				c.resources = append(c.resources, parsedResource)
+
+			if len(portalAddresses) > 0 {
+				c.resources = append(c.resources, client.Resource{
+					Name:        strings.TrimSpace(appItem.Name),
+					Description: strings.TrimSpace(appItem.Description),
+					Addresses:   portalAddresses,
+				})
 			}
 		}
 	}
 
-	if clientResource.Data.SDPPolicy.Data.ClientOption.DNSOption.FirstDNS != "" {
-		c.dnsServer = clientResource.Data.SDPPolicy.Data.ClientOption.DNSOption.FirstDNS
-		log.DebugPrintf("Set DNS server: %s", c.dnsServer)
-	} else if clientResource.Data.SDPPolicy.Data.ClientOption.DNSOptionV2.FirstDNS != "" {
-		c.dnsServer = clientResource.Data.SDPPolicy.Data.ClientOption.DNSOptionV2.FirstDNS
-		log.DebugPrintf("Set DNS server: %s", c.dnsServer)
-	} else {
-		log.DebugPrintf("No DNS server found")
+	// DNS option
+	c.dnsServer = ""
+	c.dnsServers = nil
+	dnsOption := clientResource.Data.SDPPolicy.Data.ClientOption.DNSOptionV2
+	if strings.TrimSpace(dnsOption.FirstDNS) == "" && strings.TrimSpace(dnsOption.SecondDNS) == "" {
+		dnsOption = clientResource.Data.SDPPolicy.Data.ClientOption.DNSOption
+	}
+	for _, candidate := range []string{dnsOption.FirstDNS, dnsOption.SecondDNS} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if net.ParseIP(candidate) == nil {
+			continue
+		}
+		if c.dnsServer == "" {
+			c.dnsServer = candidate
+		}
+		c.dnsServers = append(c.dnsServers, candidate)
+	}
+	if len(c.dnsServers) > 0 {
+		log.DebugPrintf("DNS servers: %v", c.dnsServers)
 	}
 
+	// Node groups
 	c.MajorNodeGroup = clientResource.Data.AppList.Data.Config.NodeGroupConf.MajorNodeGroup.ID
-	c.NodeGroups = make(map[string][]string)
+	log.DebugPrintf("Major Node Group ID: %s", c.MajorNodeGroup)
+	c.NodeGroups = make(map[string]NodeGroup)
 	for _, nodeGroup := range clientResource.Data.AppList.Data.Config.NodeGroupConf.NodeGroupList {
-		addressList := make([]string, 0)
+		var addresses NodeGroup
 		for _, addressInfo := range nodeGroup.AddressInfo {
 			address, ok := normalizeNodeAddress(addressInfo.Address, c.serverAddress)
 			if !ok {
-				log.Printf("Ignore invalid node address in group %s: %q", nodeGroup.ID, addressInfo.Address)
+				log.DebugPrintf("Ignore malformed node address %q", addressInfo.Address)
 				continue
 			}
-			addressList = append(addressList, address)
+
+			switch strings.ToLower(strings.TrimSpace(addressInfo.Type)) {
+			case "wan", "":
+				addresses.WAN = append(addresses.WAN, address)
+			case "lan":
+				addresses.LAN = append(addresses.LAN, address)
+			default:
+				log.DebugPrintf("Ignore node with unsupported type %q: %s", addressInfo.Type, address)
+				continue
+			}
 
 			// Remove ip from ipSetBuilder to prevent circular routing
 			host, _, err := net.SplitHostPort(address)
 			if err != nil {
 				continue
 			}
-			ip := net.ParseIP(host)
-			if ip != nil && ip.To4() != nil {
-				ipSetBuilder.Remove(netaddr.MustParseIP(ip.String()))
-				log.DebugPrintf("Remove IP from IP set to prevent circular routing: %s", ip)
+			if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+				if addr, ok := netaddr.FromStdIP(ip.To4()); ok {
+					ipSetBuilder.Remove(addr)
+					log.DebugPrintf("Remove IP from IP set to prevent circular routing: %s", ip)
+				}
 			}
 		}
-		c.NodeGroups[nodeGroup.ID] = addressList
-		log.DebugPrintf("Node Group ID: %s, Addresses: %v", nodeGroup.ID, addressList)
+		c.NodeGroups[nodeGroup.ID] = addresses
+		log.DebugPrintf(
+			"Node Group ID: %s, WAN Addresses: %v, LAN Addresses: %v",
+			nodeGroup.ID,
+			addresses.WAN,
+			addresses.LAN,
+		)
 	}
 
-	c.ipSet, err = ipSetBuilder.IPSet()
+	ipSet, err := ipSetBuilder.IPSet()
 	if err != nil {
-		return fmt.Errorf("build resource IP set: %w", err)
+		return fmt.Errorf("build IP set: %w", err)
 	}
+	c.ipSet = ipSet
 	c.resourceIndex = ipresource.New(c.ipResources)
 
 	return nil
+}
+
+func normalizePolicyDomain(domain string) string {
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if domain == "" {
+		return ""
+	}
+	if strings.HasPrefix(domain, "*.") {
+		rest := domain[2:]
+		if rest == "" || strings.Contains(rest, "*") {
+			return ""
+		}
+		return "." + rest
+	}
+	if strings.Contains(domain, "*") {
+		return ""
+	}
+	return domain
 }

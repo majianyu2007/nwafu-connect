@@ -21,8 +21,8 @@ func TestResolveDoesNotMatchPartialDomainSuffix(t *testing.T) {
 		"",
 		"",
 		60,
-		map[string]client.DomainResourceSet{"example.com": {resource}},
-		map[string]net.IP{"malicious-example.com": net.ParseIP("192.0.2.10")},
+		client.DomainResources{"example.com": {resource}},
+		map[string][]net.IP{"malicious-example.com": {net.ParseIP("192.0.2.10")}},
 		false,
 		false,
 	)
@@ -44,8 +44,8 @@ func TestResolveMatchesDomainAtLabelBoundary(t *testing.T) {
 		"",
 		"",
 		60,
-		map[string]client.DomainResourceSet{"example.com": {resource}},
-		map[string]net.IP{"library.example.com": net.ParseIP("192.0.2.11")},
+		client.DomainResources{"example.com": {resource}},
+		map[string][]net.IP{"library.example.com": {net.ParseIP("192.0.2.11")}},
 		false,
 		false,
 	)
@@ -55,7 +55,7 @@ func TestResolveMatchesDomainAtLabelBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := resolvedContext.Value(ContextKeyDomainResource).(client.DomainResourceSet)
+	got, ok := resolvedContext.Value(ContextKeyDomainResource).([]client.DomainResource)
 	if !ok || len(got) != 1 || got[0].AppID != resource.AppID {
 		t.Fatalf("label suffix resources = %#v, want %#v", got, resource)
 	}
@@ -206,7 +206,7 @@ func TestResolveRestoresDomainMappingForCachedIP(t *testing.T) {
 		"",
 		"",
 		60,
-		map[string]client.DomainResourceSet{"library.example.com": {resource}},
+		client.DomainResources{"library.example.com": {resource}},
 		nil,
 		false,
 		false,
@@ -215,7 +215,7 @@ func TestResolveRestoresDomainMappingForCachedIP(t *testing.T) {
 
 	ip := net.ParseIP("192.0.2.30")
 	resolver.setDNSCache("library.example.com", ip)
-	if err := resolver.IPPool.SetIPDomain(ip, "other.example.com", client.DomainResourceSet{{AppID: "other"}}); err != nil {
+	if err := resolver.IPPool.SetIPDomain(ip, "other.example.com", []client.DomainResource{{AppID: "other"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -232,14 +232,14 @@ func TestResolveRestoresDomainMappingForCachedIP(t *testing.T) {
 
 func TestResolveFakeIPOverridesCachedAndServerIssuedAddresses(t *testing.T) {
 	resource := client.DomainResource{PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "library"}
-	resources := client.DomainResourceSet{resource}
+	resources := []client.DomainResource{resource}
 	resolver := NewResolver(
 		nil,
 		"",
 		"",
 		60,
-		map[string]client.DomainResourceSet{"library.example.com": resources},
-		map[string]net.IP{"library.example.com": net.ParseIP("203.0.113.10")},
+		client.DomainResources{"library.example.com": resources},
+		map[string][]net.IP{"library.example.com": {net.ParseIP("203.0.113.10")}},
 		false,
 		false,
 	)

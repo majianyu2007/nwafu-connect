@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
@@ -16,18 +16,16 @@ func (s *Session) completeCustomSMS() (authStep, error) {
 		return authStep{}, err
 	}
 
-	code, err := s.readVerificationCode(
-		"sms",
-		"输入短信验证码",
-		"请输入学校网关发送到已登记手机的验证码。",
-		true,
-	)
-	if err != nil {
-		return authStep{}, err
+	challenge := authchallenge.CodeChallenge{
+		Kind:                 authchallenge.CodeSMS,
+		Message:              "Please enter the SMS verification code:",
+		CanSkipSecondaryAuth: true,
 	}
-
-	code, skipSecondaryAuth := strings.CutPrefix(code, "$")
-	return s.customSMSCheckCode(code, skipSecondaryAuth)
+	response, err := s.handler().HandleCodeChallenge(challenge)
+	if err != nil {
+		return authStep{}, fmt.Errorf("complete custom SMS challenge: %w", err)
+	}
+	return s.customSMSCheckCode(response.Code, response.SkipSecondaryAuth)
 }
 
 func (s *Session) sendCustomSMS() error {
@@ -55,13 +53,13 @@ func (s *Session) sendCustomSMS() error {
 	}
 	s.setAuthJSONHeaders(req)
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	body, err = readAuthHTTPResponse(resp, "custom SMS send", 8<<20)
+	body, err = readAuthHTTPResponse(resp, "sendCustomSMS", 8<<20)
 	if err != nil {
 		return err
 	}
@@ -119,13 +117,13 @@ func (s *Session) customSMSCheckCode(code string, skipSecondaryAuth bool) (authS
 	}
 	s.setAuthJSONHeaders(req)
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return authStep{}, err
 	}
 	defer resp.Body.Close()
 
-	body, err = readAuthHTTPResponse(resp, "custom SMS verification", 8<<20)
+	body, err = readAuthHTTPResponse(resp, "customSMSCheckCode", 8<<20)
 	if err != nil {
 		return authStep{}, err
 	}

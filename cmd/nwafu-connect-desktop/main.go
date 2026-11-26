@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 
 	"fyne.io/fyne/v2"
@@ -64,7 +65,9 @@ func main() {
 		}
 		go func() {
 			if err := controller.Restart(); err != nil {
-				application.SendNotification(fyne.NewNotification("NWAFU Connect", err.Error()))
+				fyne.Do(func() {
+					application.SendNotification(fyne.NewNotification("NWAFU Connect", err.Error()))
+				})
 			}
 		}()
 		return nil
@@ -75,49 +78,97 @@ func main() {
 		os.Exit(1)
 	}
 
-	statusItem := fyne.NewMenuItem("○ 尚未连接", nil)
-	statusItem.Disabled = true
-	openBrowserItem := fyne.NewMenuItemWithIcon("打开受管浏览器", theme.ComputerIcon(), func() {
-		if err := controller.OpenBrowser(); err != nil {
-			showError(application, statusItem, err)
-		}
-	})
-	openBrowserItem.Disabled = true
-	reconnectItem := fyne.NewMenuItemWithIcon("重新连接", theme.ViewRefreshIcon(), func() {
-		go func() {
-			if err := controller.Restart(); err != nil {
-				fyne.Do(func() { showError(application, statusItem, err) })
-			}
-		}()
-	})
-	settingsItem := fyne.NewMenuItemWithIcon("设置…", theme.SettingsIcon(), settings.Show)
-	dataItem := fyne.NewMenuItem("打开私有数据目录", func() {
-		if err := openPath(paths.Root); err != nil {
-			showError(application, statusItem, err)
-		}
-	})
-	logItem := fyne.NewMenuItem("查看运行日志", func() {
-		if err := openPath(paths.Log); err != nil {
-			showError(application, statusItem, err)
-		}
-	})
-	quitItem := fyne.NewMenuItem("退出 NWAFU Connect", application.Quit)
-	quitItem.IsQuit = true
-	trayMenu := fyne.NewMenu("NWAFU Connect", statusItem, fyne.NewMenuItemSeparator(), openBrowserItem, reconnectItem, settingsItem, fyne.NewMenuItemSeparator(), dataItem, logItem, fyne.NewMenuItemSeparator(), quitItem)
-
 	desktopApplication, ok := application.(desktop.App)
 	if !ok {
 		fmt.Fprintln(os.Stderr, "当前图形环境不支持系统托盘")
 		_ = controller.Stop()
 		os.Exit(1)
 	}
+
+	var proxyMu sync.Mutex
+	currentProxy := ""
+
+	var trayMenu *fyne.Menu
+	statusItem := fyne.NewMenuItem("○ 尚未连接", nil)
+	statusItem.Disabled = true
+
+	notifyError := func(err error) {
+		showError(application, desktopApplication, trayMenu, statusItem, err)
+	}
+
+	openBrowserItem := fyne.NewMenuItemWithIcon("打开受管浏览器", theme.ComputerIcon(), func() {
+		if err := controller.OpenBrowser(); err != nil {
+			notifyError(err)
+		}
+	})
+	openBrowserItem.Disabled = true
+
+	copyProxyItem := fyne.NewMenuItem("复制本地代理地址", func() {
+		proxyMu.Lock()
+		addr := currentProxy
+		proxyMu.Unlock()
+		if addr == "" {
+			return
+		}
+		application.Clipboard().SetContent("http://" + addr)
+		application.SendNotification(fyne.NewNotification("NWAFU Connect", "已复制代理地址 http://"+addr))
+	})
+	copyProxyItem.Disabled = true
+
+	reconnectItem := fyne.NewMenuItemWithIcon("重新连接", theme.ViewRefreshIcon(), func() {
+		go func() {
+			if err := controller.Restart(); err != nil {
+				fyne.Do(func() { notifyError(err) })
+			}
+		}()
+	})
+
+	disconnectItem := fyne.NewMenuItem("断开连接", func() {
+		go func() {
+			if err := controller.Disconnect(); err != nil {
+				fyne.Do(func() { notifyError(err) })
+			}
+		}()
+	})
+	disconnectItem.Disabled = true
+
+	settingsItem := fyne.NewMenuItemWithIcon("设置…", theme.SettingsIcon(), settings.Show)
+	dataItem := fyne.NewMenuItem("打开私有数据目录", func() {
+		if err := openPath(paths.Root); err != nil {
+			notifyError(err)
+		}
+	})
+	logItem := fyne.NewMenuItem("查看运行日志", func() {
+		if err := openPath(paths.Log); err != nil {
+			notifyError(err)
+		}
+	})
+	quitItem := fyne.NewMenuItem("退出 NWAFU Connect", application.Quit)
+	quitItem.IsQuit = true
+
+	trayMenu = fyne.NewMenu(
+		"NWAFU Connect",
+		statusItem,
+		fyne.NewMenuItemSeparator(),
+		openBrowserItem,
+		copyProxyItem,
+		reconnectItem,
+		disconnectItem,
+		settingsItem,
+		fyne.NewMenuItemSeparator(),
+		dataItem,
+		logItem,
+		fyne.NewMenuItemSeparator(),
+		quitItem,
+	)
+
 	desktopApplication.SetSystemTrayIcon(trayIcon)
 	desktopApplication.SetSystemTrayMenu(trayMenu)
 	systray.SetOnTapped(func() {
 		fmt.Fprintln(os.Stderr, "托盘已点击：连接并启动受管浏览器")
 		go func() {
 			if err := controller.Activate(); err != nil {
-				fyne.Do(func() { showError(application, statusItem, err) })
+				fyne.Do(func() { notifyError(err) })
 			}
 		}()
 	})
@@ -125,13 +176,26 @@ func main() {
 	go func() {
 		for status := range controller.Status() {
 			status := status
+			proxyMu.Lock()
+			currentProxy = status.ProxyAddress
+			proxyMu.Unlock()
 			fyne.Do(func() {
 				if status.Connected {
 					statusItem.Label = "● " + status.Message
 					openBrowserItem.Disabled = false
+					copyProxyItem.Disabled = status.ProxyAddress == ""
+					if status.ProxyAddress != "" {
+						copyProxyItem.Label = "复制代理 (" + status.ProxyAddress + ")"
+					} else {
+						copyProxyItem.Label = "复制本地代理地址"
+					}
+					disconnectItem.Disabled = false
 				} else {
 					statusItem.Label = "○ " + status.Message
 					openBrowserItem.Disabled = true
+					copyProxyItem.Disabled = true
+					copyProxyItem.Label = "复制本地代理地址"
+					disconnectItem.Disabled = status.Message == "连接已停止" || status.Message == "连接已结束"
 				}
 				desktopApplication.SetSystemTrayMenu(trayMenu)
 			})
@@ -140,14 +204,14 @@ func main() {
 
 	configured, err := controller.Configured()
 	if err != nil {
-		showError(application, statusItem, err)
+		notifyError(err)
 	}
 	if !configured {
 		settings.Show()
 	} else if !*noAutoConnect {
 		go func() {
 			if err := controller.Start(); err != nil {
-				fyne.Do(func() { showError(application, statusItem, err) })
+				fyne.Do(func() { notifyError(err) })
 			}
 		}()
 	}
@@ -163,8 +227,11 @@ func main() {
 	_ = controller.Stop()
 }
 
-func showError(application fyne.App, statusItem *fyne.MenuItem, err error) {
+func showError(application fyne.App, desktopApplication desktop.App, trayMenu *fyne.Menu, statusItem *fyne.MenuItem, err error) {
 	statusItem.Label = "! " + err.Error()
+	if desktopApplication != nil && trayMenu != nil {
+		desktopApplication.SetSystemTrayMenu(trayMenu)
+	}
 	application.SendNotification(fyne.NewNotification("NWAFU Connect", err.Error()))
 }
 
@@ -180,5 +247,9 @@ func openPath(path string) error {
 	default:
 		return fmt.Errorf("当前系统不支持打开路径")
 	}
-	return command.Start()
+	if err := command.Start(); err != nil {
+		return err
+	}
+	go func() { _ = command.Wait() }()
+	return nil
 }

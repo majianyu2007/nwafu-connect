@@ -47,6 +47,7 @@ func TestShouldReconnectAfterWakeOrNetworkRecovery(t *testing.T) {
 		{name: "wake from sleep", desired: true, elapsed: 2 * time.Minute, wasOnline: true, nowOnline: true, want: true},
 		{name: "network recovered", desired: true, elapsed: 15 * time.Second, wasOnline: false, nowOnline: true, want: true},
 		{name: "still offline", desired: true, elapsed: 15 * time.Second, wasOnline: false, nowOnline: false},
+		{name: "wake while offline skips reconnect", desired: true, elapsed: 2 * time.Minute, wasOnline: true, nowOnline: false},
 		{name: "manually stopped before wake", elapsed: 2 * time.Minute, wasOnline: true, nowOnline: true},
 	}
 	for _, test := range tests {

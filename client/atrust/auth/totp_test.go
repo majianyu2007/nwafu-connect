@@ -71,7 +71,7 @@ func TestCheckTOTPSendsGatewayPayload(t *testing.T) {
 		AuthID:       "auth-1",
 		TaskID:       "task-1",
 		IsPrevEffect: true,
-	}, "123456")
+	}, "123456", false)
 	if err != nil {
 		t.Fatal(err)
 	}

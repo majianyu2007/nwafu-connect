@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/majianyu2007/nwafu-connect/client"
 	"github.com/majianyu2007/nwafu-connect/internal/hook_func"
@@ -23,7 +24,11 @@ import (
 	gvisorstack "gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-const MTU uint32 = 1400
+const (
+	MTU                  uint32 = 1400
+	maxInboundPacketSize        = 1500
+	hijackDNSTimeout            = 5 * time.Second
+)
 
 var errTunnelIO = errors.New("VPN tunnel I/O failed")
 
@@ -34,7 +39,7 @@ type Stack struct {
 	l3Conn              io.ReadWriteCloser
 	resolve             zcdns.LocalServer
 	resourceIndex       *ipresource.Index
-	ipPool              *ippool.IPPool[client.DomainResourceSet]
+	ipPool              *ippool.IPPool[[]client.DomainResource]
 	fakeIP              bool
 }
 
@@ -46,7 +51,7 @@ func (s *Stack) SetupResolve(r zcdns.LocalServer) {
 	s.resolve = r
 }
 
-func (s *Stack) SetupIPPool(ipPool *ippool.IPPool[client.DomainResourceSet]) {
+func (s *Stack) SetupIPPool(ipPool *ippool.IPPool[[]client.DomainResource]) {
 	s.ipPool = ipPool
 }
 
@@ -67,8 +72,8 @@ func (s *Stack) Run() error {
 
 	runErrors := make(chan error, 2)
 	go func() {
+		buf := make([]byte, maxInboundPacketSize+tun.PacketOffset)
 		for {
-			buf := make([]byte, MTU+tun.PacketOffset)
 			n, err := s.l3Conn.Read(buf)
 			if err != nil {
 				runErrors <- fmt.Errorf("read from VPN server: %w", err)
@@ -85,8 +90,8 @@ func (s *Stack) Run() error {
 	}()
 
 	go func() {
+		buf := make([]byte, maxInboundPacketSize+tun.PacketOffset)
 		for {
-			buf := make([]byte, MTU+tun.PacketOffset)
 			n, err := s.endpoint.Read(buf)
 			if err != nil {
 				runErrors <- fmt.Errorf("read from TUN interface: %w", err)
@@ -160,30 +165,42 @@ func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
 		return fmt.Errorf("protocol %d not supported, skip", packet.Protocol())
 	}
 
-	domain, resourceSet, ok := s.ipPool.GetDomain(packet.DestinationIP())
-	if ok {
-		log.DebugPrintf("IP to domain %s", domain)
-		for _, resource := range resourceSet {
-			if resource.Protocol == protocol || resource.Protocol == "all" {
-				if protocol == "icmp" {
-					return s.processIPV4ICMP(packet, packet.Payload())
+	if s.ipPool != nil {
+		if domain, resources, ok := s.ipPool.GetDomain(packet.DestinationIP()); ok {
+			log.DebugPrintf("IP to domain %s", domain)
+			if protocol == "tcp" {
+				if resource, matched := client.MatchDomainResourceWhere(resources, protocol, port, func(r client.DomainResource) bool {
+					return !r.EnableTCPPrefL3
+				}); matched {
+					return s.processIPV4TCP(packet, packet.Payload(), resource.EnableTCPPrefL3)
 				}
-				if resource.PortMin <= port && port <= resource.PortMax {
-					if protocol == "tcp" {
-						return s.processIPV4TCP(packet, packet.Payload())
-					}
+			}
+			if resource, matched := client.MatchDomainResource(resources, protocol, port); matched {
+				switch protocol {
+				case "icmp":
+					return s.processIPV4ICMP(packet, packet.Payload())
+				case "tcp":
+					return s.processIPV4TCP(packet, packet.Payload(), resource.EnableTCPPrefL3)
+				default:
 					return s.processIPV4UDP(packet, packet.Payload())
 				}
 			}
 		}
 	}
 
-	if _, ok := s.resourceIndex.Match(packet.DestinationIP(), protocol, port); ok {
+	if protocol == "tcp" {
+		if resource, ok := s.resourceIndex.MatchWhere(packet.DestinationIP(), protocol, port, func(r client.IPResource) bool {
+			return !r.EnableTCPPrefL3
+		}); ok {
+			return s.processIPV4TCP(packet, packet.Payload(), resource.EnableTCPPrefL3)
+		}
+	}
+	if resource, ok := s.resourceIndex.Match(packet.DestinationIP(), protocol, port); ok {
 		switch protocol {
 		case "icmp":
 			return s.processIPV4ICMP(packet, packet.Payload())
 		case "tcp":
-			return s.processIPV4TCP(packet, packet.Payload())
+			return s.processIPV4TCP(packet, packet.Payload(), resource.EnableTCPPrefL3)
 		default:
 			return s.processIPV4UDP(packet, packet.Payload())
 		}
@@ -191,12 +208,11 @@ func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
 
 	if port != -1 {
 		return fmt.Errorf("no VPN resources found for %s:%d, [%s], skip", packet.DestinationIP(), port, protocol)
-	} else {
-		return fmt.Errorf("no VPN resources found for %s, [%s], skip", packet.DestinationIP(), protocol)
 	}
+	return fmt.Errorf("no VPN resources found for %s, [%s], skip", packet.DestinationIP(), protocol)
 }
 
-func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPPacket) error {
+func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPPacket, preferL3 bool) error {
 	log.DebugPrintf("receive tcp %s:%d -> %s:%d", packet.SourceIP(), tcpPacket.SourcePort(), packet.DestinationIP(), tcpPacket.DestinationPort())
 
 	if !packet.DestinationIP().IsGlobalUnicast() {
@@ -206,7 +222,7 @@ func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPP
 		return nil
 	}
 
-	if s.endpoint.client.CanUseTCPTunnel() {
+	if s.endpoint.client.CanUseTCPTunnel() && !preferL3 {
 		pkt := gvisorstack.NewPacketBuffer(gvisorstack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(packet),
 		})
@@ -285,7 +301,8 @@ func (s *Stack) doHijackUDPDns(ipHeader zctcpip.IPv4Packet, udpHeader zctcpip.UD
 		log.Printf("unpack dns msg error: %v", err)
 		return
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), hijackDNSTimeout)
+	defer cancel()
 	if s.fakeIP && s.endpoint.client.CanUseTCPTunnel() {
 		ctx = context.WithValue(ctx, resolve.ContextKeyFakeIP, true)
 	}

@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	atrustclient "github.com/majianyu2007/nwafu-connect/client/atrust"
@@ -26,20 +27,23 @@ import (
 	"github.com/majianyu2007/nwafu-connect/resolve"
 	"github.com/majianyu2007/nwafu-connect/service"
 	"github.com/majianyu2007/nwafu-connect/stack/gvisor"
+	"github.com/majianyu2007/nwafu-connect/underlay"
 )
 
 const (
-	DefaultServer             = "vpn.nwafu.edu.cn"
-	DefaultPort               = 443
-	DefaultHTTPBind           = "127.0.0.1:0"
-	DefaultLoginDomain        = "LDAP"
-	DefaultRemoteDNSServer    = "auto"
-	DefaultSecondaryDNSServer = "114.114.114.114"
-	DefaultDNSTTL             = 3600
-	DefaultBestNodesInterval  = 300
+	DefaultServer                 = "vpn.nwafu.edu.cn"
+	DefaultPort                   = 443
+	DefaultHTTPBind               = "127.0.0.1:0"
+	DefaultLoginDomain            = "LDAP"
+	DefaultRemoteDNSServer        = "auto"
+	DefaultSecondaryDNSServer     = "auto"
+	DefaultDNSTTL                 = 3600
+	DefaultBestNodesInterval      = 300
+	DefaultSessionRefreshInterval = 1800
 
 	// fallbackDNSServer matches the CLI when the gateway provides none.
-	fallbackDNSServer = "10.10.0.21"
+	fallbackDNSServer          = "10.10.0.21"
+	fallbackSecondaryDNSServer = "114.114.114.114"
 )
 
 // Config describes one session. Zero values take the CLI defaults.
@@ -57,13 +61,19 @@ type Config struct {
 	// HTTPBind is the local proxy listen address (default 127.0.0.1:0).
 	HTTPBind string `json:"httpBind"`
 
-	RemoteDNSServer         string `json:"remoteDnsServer"`
-	SecondaryDNSServer      string `json:"secondaryDnsServer"`
-	DNSTTL                  uint64 `json:"dnsTtl"`
-	DisableRemoteDNS        bool   `json:"disableRemoteDns"`
-	DisableKeepAlive        bool   `json:"disableKeepAlive"`
-	KeepAliveURL            string `json:"keepAliveUrl"`
-	UpdateBestNodesInterval int    `json:"updateBestNodesInterval"`
+	RemoteDNSServer         string   `json:"remoteDnsServer"`
+	SecondaryDNSServer      string   `json:"secondaryDnsServer"`
+	LocalDNSServer          string   `json:"localDnsServer"`
+	DNSTTL                  uint64   `json:"dnsTtl"`
+	DisableRemoteDNS        bool     `json:"disableRemoteDns"`
+	DisableKeepAlive        bool     `json:"disableKeepAlive"`
+	KeepAliveURL            string   `json:"keepAliveUrl"`
+	UpdateBestNodesInterval int      `json:"updateBestNodesInterval"`
+	SessionRefreshInterval  int      `json:"sessionRefreshInterval"`
+	BindInterface           string   `json:"bindInterface"`
+	AutoDetectInterface     bool     `json:"autoDetectInterface"`
+	MACAddresses            []string `json:"macAddresses"`
+	ProxyAll                bool     `json:"proxyAll"`
 }
 
 func (c Config) withDefaults() Config {
@@ -91,6 +101,9 @@ func (c Config) withDefaults() Config {
 	if c.UpdateBestNodesInterval == 0 {
 		c.UpdateBestNodesInterval = DefaultBestNodesInterval
 	}
+	if c.SessionRefreshInterval == 0 {
+		c.SessionRefreshInterval = DefaultSessionRefreshInterval
+	}
 	return c
 }
 
@@ -108,6 +121,9 @@ func (c Config) Validate() error {
 	}
 	if c.UpdateBestNodesInterval < 0 {
 		return errors.New("updateBestNodesInterval must not be negative")
+	}
+	if c.SessionRefreshInterval < 0 {
+		return errors.New("sessionRefreshInterval must not be negative")
 	}
 	return nil
 }
@@ -182,11 +198,13 @@ type Session struct {
 	proxyAddr string
 	clientIP  string
 
-	vpnClient  *atrustclient.Client
-	vpnStack   *gvisor.Stack
-	resolver   *resolve.Resolver
-	closeProxy func(context.Context) error
-	cancelBg   context.CancelFunc
+	underlayDialer *underlay.Dialer
+	vpnClient      *atrustclient.Client
+	vpnStack       *gvisor.Stack
+	resolver       *resolve.Resolver
+	closeProxy     func(context.Context) error
+	cancelBg       context.CancelFunc
+	stackDone      chan struct{}
 
 	mu      sync.Mutex
 	state   State
@@ -216,6 +234,16 @@ func Start(ctx context.Context, cfg Config, prompt Prompter) (_ *Session, return
 		}
 	}()
 
+	var err error
+	s.underlayDialer, err = underlay.New(underlay.Options{
+		InterfaceName:  cfg.BindInterface,
+		AutoDetect:     cfg.AutoDetectInterface,
+		LocalDNSServer: cfg.LocalDNSServer,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create underlay dialer: %w", err)
+	}
+
 	var clientData []byte
 	if cfg.ClientDataPath != "" {
 		data, err := os.ReadFile(cfg.ClientDataPath)
@@ -226,32 +254,62 @@ func Start(ctx context.Context, cfg Config, prompt Prompter) (_ *Session, return
 		}
 	}
 
-	s.vpnClient = atrustclient.NewClient(cfg.Username, "", "", "")
-	s.vpnClient.Prompter = promptAdapter{ctx: ctx, p: prompt}
+	loginMethod, err := auth.NewLoginMethod(auth.LoginMethodOptions{
+		AuthType: "auth/psw",
+		Username: cfg.Username,
+		Password: cfg.Password,
+		Domain:   cfg.LoginDomain,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure login: %w", err)
+	}
 
-	newClientData, err := s.vpnClient.Setup(
-		cfg.Server, cfg.Port,
-		cfg.Username, cfg.Password, cfg.TOTPSecret,
-		"", cfg.LoginDomain, "auth/psw",
-		"", "", false, false,
-		clientData, nil,
-		cfg.UpdateBestNodesInterval,
-	)
-	if err != nil && clientData != nil && ctx.Err() == nil {
+	var saveClientData func([]byte) error
+	if cfg.ClientDataPath != "" {
+		saveClientData = func(data []byte) error {
+			if err := writePrivateFile(cfg.ClientDataPath, data); err != nil {
+				log.Printf("Write client data file error: %s", err)
+			}
+			return nil
+		}
+	}
+
+	newClient := func() *atrustclient.Client {
+		return atrustclient.NewClient(atrustclient.ClientOptions{
+			Session: atrustclient.SessionOptions{
+				Username:     cfg.Username,
+				MACAddresses: cfg.MACAddresses,
+			},
+			UnderlayDialer: s.underlayDialer,
+		})
+	}
+	setupOpts := func(saved []byte) atrustclient.SetupOptions {
+		return atrustclient.SetupOptions{
+			ServerAddress:            cfg.Server,
+			ServerPort:               cfg.Port,
+			LoginMethod:              loginMethod,
+			TOTPSecret:               cfg.TOTPSecret,
+			ClientData:               saved,
+			BestNodesRefreshInterval: time.Duration(cfg.UpdateBestNodesInterval) * time.Second,
+			SessionRefreshInterval:   time.Duration(cfg.SessionRefreshInterval) * time.Second,
+			Prompter:                 promptAdapter{ctx: ctx, p: prompt},
+			SaveClientData:           saveClientData,
+			OnSessionInvalid: func(invalidErr error) {
+				s.fail(fmt.Errorf("aTrust session expired: %w", invalidErr))
+			},
+		}
+	}
+
+	s.vpnClient = newClient()
+	_, err = s.vpnClient.SetupContext(ctx, setupOpts(clientData))
+	if err != nil && clientData != nil && ctx.Err() == nil && !isUnreachableNetworkError(err) {
 		// Stale or corrupt saved state must not lock the user out: retry
-		// once with a clean device, as a first login would.
+		// once with a clean device, as a first login would. Skip retrying
+		// when the gateway itself is unreachable (e.g. inside campus network).
 		log.Printf("Login with saved client data failed (%v); retrying fresh", err)
 		s.vpnClient.Close()
-		s.vpnClient = atrustclient.NewClient(cfg.Username, "", "", "")
-		s.vpnClient.Prompter = promptAdapter{ctx: ctx, p: prompt}
-		newClientData, err = s.vpnClient.Setup(
-			cfg.Server, cfg.Port,
-			cfg.Username, cfg.Password, cfg.TOTPSecret,
-			"", cfg.LoginDomain, "auth/psw",
-			"", "", false, false,
-			nil, nil,
-			cfg.UpdateBestNodesInterval,
-		)
+		s.vpnClient = newClient()
+		_, err = s.vpnClient.SetupContext(ctx, setupOpts(nil))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("login: %w", err)
@@ -259,13 +317,8 @@ func Start(ctx context.Context, cfg Config, prompt Prompter) (_ *Session, return
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if cfg.ClientDataPath != "" && newClientData != nil {
-		if err := writePrivateFile(cfg.ClientDataPath, newClientData); err != nil {
-			log.Printf("Write client data file error: %s", err)
-		}
-	}
 
-	if ip, err := s.vpnClient.IP(); err == nil {
+	if ip, err := s.vpnClient.IP(); err == nil && ip != nil {
 		s.clientIP = ip.String()
 	}
 	ipResources, err := s.vpnClient.IPResources()
@@ -288,6 +341,7 @@ func Start(ctx context.Context, cfg Config, prompt Prompter) (_ *Session, return
 
 	useRemoteDNS := !cfg.DisableRemoteDNS
 	remoteDNSServer := cfg.RemoteDNSServer
+	policyDNSServers, _ := s.vpnClient.DNSServers()
 	if useRemoteDNS && remoteDNSServer == "auto" {
 		remoteDNSServer, err = s.vpnClient.DNSServer()
 		if err != nil {
@@ -296,25 +350,34 @@ func Start(ctx context.Context, cfg Config, prompt Prompter) (_ *Session, return
 			log.Println("No DNS server provided by server. Disable remote DNS")
 		}
 	}
+	secondaryDNSServer := cfg.SecondaryDNSServer
+	if secondaryDNSServer == "auto" {
+		secondaryDNSServer = fallbackSecondaryDNSServer
+		if len(policyDNSServers) > 1 {
+			secondaryDNSServer = policyDNSServers[1]
+		}
+	}
 
 	s.resolver = resolve.NewResolver(
 		s.vpnStack,
 		remoteDNSServer,
-		cfg.SecondaryDNSServer,
+		secondaryDNSServer,
 		cfg.DNSTTL,
 		domainResources,
 		dnsResource,
 		useRemoteDNS,
 		false,
 	)
-	localResolver := service.NewDnsServer(s.resolver, []string{remoteDNSServer, cfg.SecondaryDNSServer}, cfg.DNSTTL)
+	localResolver := service.NewDnsServer(s.resolver, []string{remoteDNSServer, secondaryDNSServer}, cfg.DNSTTL)
 	s.vpnStack.SetupResolve(localResolver)
 	s.vpnStack.SetupIPPool(s.resolver.IPPool)
 
 	bgCtx, cancelBg := context.WithCancel(context.Background())
 	s.cancelBg = cancelBg
+	s.stackDone = make(chan struct{})
 
 	go func() {
+		defer close(s.stackDone)
 		runErr := s.vpnStack.Run()
 		if bgCtx.Err() != nil {
 			return // closed on purpose
@@ -326,7 +389,7 @@ func Start(ctx context.Context, cfg Config, prompt Prompter) (_ *Session, return
 		s.fail(runErr)
 	}()
 
-	vpnDialer := dial.NewDialer(s.vpnStack, s.resolver, ipResources, false, "")
+	vpnDialer := dial.NewDialer(s.vpnStack, s.resolver, ipResources, cfg.ProxyAll, "")
 
 	s.proxyAddr, s.closeProxy, err = service.ServeHTTPProxy(cfg.HTTPBind, vpnDialer)
 	if err != nil {
@@ -339,6 +402,28 @@ func Start(ctx context.Context, cfg Config, prompt Prompter) (_ *Session, return
 
 	log.Printf("Embedded session ready, HTTP proxy at %s", s.proxyAddr)
 	return s, nil
+}
+
+func isUnreachableNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func (s *Session) fail(err error) {
@@ -367,8 +452,8 @@ func (s *Session) Status() Status {
 	return st
 }
 
-// Close stops the proxy, keep-alive, resolver, stack and aTrust client. It
-// is safe to call more than once.
+// Close stops the proxy, keep-alive, resolver, stack, aTrust client, and
+// underlay dialer. It is safe to call more than once.
 func (s *Session) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
@@ -392,8 +477,14 @@ func (s *Session) Close() error {
 		if s.vpnStack != nil {
 			errs = append(errs, s.vpnStack.Close())
 		}
+		if s.stackDone != nil {
+			<-s.stackDone
+		}
 		if s.vpnClient != nil {
 			s.vpnClient.Close()
+		}
+		if s.underlayDialer != nil {
+			errs = append(errs, s.underlayDialer.Close())
 		}
 		s.closeErr = errors.Join(errs...)
 	})
@@ -403,29 +494,46 @@ func (s *Session) Close() error {
 // compile-time check that the adapter satisfies the auth hook.
 var _ auth.Prompter = promptAdapter{}
 
-func writePrivateFile(path string, payload []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+func writePrivateFile(path string, payload []byte) (returnErr error) {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".nwafu-connect-*")
+	tmp, err := os.CreateTemp(directory, ".nwafu-connect-*")
 	if err != nil {
 		return err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
+	defer func() {
+		if tmp != nil {
+			returnErr = errors.Join(returnErr, tmp.Close())
+		}
+	}()
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(payload); err != nil {
-		tmp.Close()
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	if err := tmp.Sync(); err != nil {
 		return err
+	}
+	closeErr := tmp.Close()
+	tmp = nil
+	if closeErr != nil {
+		return closeErr
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		return err
+		if _, statErr := os.Stat(path); statErr != nil {
+			return err
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			return removeErr
+		}
+		if renameErr := os.Rename(tmpPath, path); renameErr != nil {
+			return renameErr
+		}
 	}
 	return os.Chmod(path, 0o600)
 }

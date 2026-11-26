@@ -1,16 +1,22 @@
 package auth
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	mathrand "math/rand"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
+	"strings"
 	"time"
 
+	"github.com/majianyu2007/nwafu-connect/client"
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
@@ -50,14 +56,113 @@ type Cookie struct {
 }
 
 type ClientAuthData struct {
-	Cookies  []Cookie `json:"cookies"`
-	DeviceID string   `json:"device_id"`
+	Cookies           []Cookie        `json:"cookies"`
+	DeviceID          string          `json:"device_id"`
+	MACAddresses      []string        `json:"mac_addresses,omitempty"`
+	ServerVersionInfo json.RawMessage `json:"server_version_info,omitempty"`
+}
+
+type ServerVersionInfo struct {
+	Code int `json:"code"`
+	Data struct {
+		Capacities struct {
+			ZeroRTT struct {
+				Version string `json:"version"`
+			} `json:"zeroRTT"`
+		} `json:"capacities"`
+		Options struct {
+			Tun0RTT struct {
+				Enable bool `json:"enable"`
+			} `json:"tun0rtt"`
+		} `json:"options"`
+	} `json:"data"`
+}
+
+func ParseServerVersionInfo(data []byte) (ServerVersionInfo, error) {
+	var info ServerVersionInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return info, fmt.Errorf("failed to parse aTrust server manifest: %w", err)
+	}
+	if info.Code != 0 {
+		return info, fmt.Errorf("aTrust server manifest failed with code %d", info.Code)
+	}
+	return info, nil
+}
+
+func (i ServerVersionInfo) TCPTunnelZeroRTT() bool {
+	return i.Data.Capacities.ZeroRTT.Version != "" && i.Data.Options.Tun0RTT.Enable
+}
+
+// Prompter handles interactive authentication prompts (click captcha and
+// verification codes) when running embedded in a host process without a
+// terminal or local browser page.
+type Prompter interface {
+	GraphCheckCode(image []byte) (string, error)
+	VerificationCode(kind, title, hint string, allowSkip bool) (string, error)
+}
+
+type prompterChallengeHandler struct {
+	prompter Prompter
+}
+
+func newPrompterChallengeHandler(prompter Prompter) authchallenge.Handler {
+	return prompterChallengeHandler{prompter: prompter}
+}
+
+func (h prompterChallengeHandler) HandleCodeChallenge(challenge authchallenge.CodeChallenge) (authchallenge.CodeResponse, error) {
+	title := "输入验证码"
+	switch challenge.Kind {
+	case authchallenge.CodeSMS:
+		title = "输入短信验证码"
+	case authchallenge.CodeTOTP:
+		title = "输入动态验证码"
+	case authchallenge.CodeRadius:
+		title = "输入 RADIUS 验证码"
+	case authchallenge.CodeDevice:
+		title = "选择要解绑的终端"
+	}
+	code, err := h.prompter.VerificationCode(string(challenge.Kind), title, challenge.Message, challenge.CanSkipSecondaryAuth)
+	if err != nil {
+		return authchallenge.CodeResponse{}, err
+	}
+	code = strings.TrimSpace(code)
+	skip := false
+	if challenge.CanSkipSecondaryAuth {
+		if stripped, found := strings.CutPrefix(code, "$"); found {
+			code = strings.TrimSpace(stripped)
+			skip = true
+		}
+	}
+	if code == "" {
+		return authchallenge.CodeResponse{}, errors.New("empty verification code")
+	}
+	return authchallenge.CodeResponse{Code: code, SkipSecondaryAuth: skip}, nil
+}
+
+func (h prompterChallengeHandler) HandleTextCaptcha(challenge authchallenge.TextCaptchaChallenge) (authchallenge.TextCaptchaResponse, error) {
+	return authchallenge.UnsupportedHandler{}.HandleTextCaptcha(challenge)
+}
+
+func (h prompterChallengeHandler) HandleClickCaptcha(challenge authchallenge.ClickCaptchaChallenge) (authchallenge.ClickCaptchaResponse, error) {
+	raw, err := h.prompter.GraphCheckCode(challenge.Image)
+	if err != nil {
+		return authchallenge.ClickCaptchaResponse{}, err
+	}
+	return authchallenge.ParseClickCaptchaResponse(raw)
+}
+
+func (h prompterChallengeHandler) HandleExternalLogin(challenge authchallenge.ExternalLoginChallenge) (authchallenge.ExternalLoginResponse, error) {
+	return authchallenge.UnsupportedHandler{}.HandleExternalLogin(challenge)
 }
 
 type Session struct {
-	client     *http.Client
-	deviceID   string
-	totpSecret string
+	ctx          context.Context
+	client       *http.Client
+	deviceID     string
+	macAddresses []string
+	signKey      []byte
+	username     string
+	totpSecret   string
 
 	baseHost string
 	baseURL  string
@@ -69,47 +174,70 @@ type Session struct {
 	pubKeyExp      string
 	antiReplayRand string
 	ticket         string
+	nextService    string
 
-	response map[string]json.RawMessage
-
-	prompter Prompter
+	response         map[string]json.RawMessage
+	challengeHandler authchallenge.Handler
 }
 
-// Prompter lets an embedding host answer interactive login steps instead of
-// the terminal / local browser pages used by the CLI. A nil Prompter keeps
-// the CLI behaviour.
-type Prompter interface {
-	// GraphCheckCode receives the gateway's click captcha image and returns
-	// the clicked coordinates in any format canonicalizeGraphCheckCode accepts
-	// (e.g. `[[x,y],...]` or `{"coordinates":[[x,y]],"width":w,"height":h}`).
-	GraphCheckCode(image []byte) (string, error)
-	// VerificationCode asks for a one-time code. kind is "sms" or "totp".
-	// A leading "$" requests skipping secondary auth where allowSkip is true.
-	VerificationCode(kind, title, hint string, allowSkip bool) (string, error)
+func NewSession(server string, tlsKeyLogWriter io.Writer, dialContext ...client.DialContextFunc) *Session {
+	return NewSessionContext(context.Background(), server, tlsKeyLogWriter, dialContext...)
 }
 
-func NewSession(server string) *Session {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+func NewSessionContext(ctx context.Context, server string, tlsKeyLogWriter io.Writer, dialContext ...client.DialContextFunc) *Session {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{}
+	} else {
+		tr.TLSClientConfig = tr.TLSClientConfig.Clone()
+	}
+	tr.TLSClientConfig.KeyLogWriter = tlsKeyLogWriter
+	if len(dialContext) > 0 && dialContext[0] != nil {
+		tr.DialContext = dialContext[0]
+	}
 	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Transport: transport, Jar: jar, Timeout: 20 * time.Second}
+	httpClient := &http.Client{Transport: tr, Jar: jar, Timeout: 20 * time.Second}
 
-	rid := base64.StdEncoding.EncodeToString([]byte(server))
 	return &Session{
-		client:   client,
+		ctx:      ctx,
+		client:   httpClient,
 		baseHost: server,
 		baseURL:  "https://" + server,
-		rid:      rid,
+		rid:      base64.StdEncoding.EncodeToString([]byte(server)),
 		response: make(map[string]json.RawMessage),
 	}
 }
 
-type AuthInfo struct {
-	LoginDomain            string               `json:"loginDomain"`
-	AuthType               string               `json:"authType"`
-	AuthName               string               `json:"authName"`
-	LoginURL               string               `json:"loginUrl"`
-	QYWechatQrcodeConf     QYWechatQrcodeConfig `json:"qyWechatQrcodeConf"`
-	ThirdAuthQrcodeTimeout int                  `json:"thirdAuthQrcodeTimeout"`
+func (s *Session) request(req *http.Request) (*http.Response, error) {
+	if s.ctx == nil {
+		return s.client.Do(req)
+	}
+	ctx, cancel := context.WithCancel(req.Context())
+	stop := context.AfterFunc(s.ctx, cancel)
+
+	resp, err := s.client.Do(req.WithContext(ctx))
+	if err != nil {
+		stop()
+		cancel()
+		return nil, err
+	}
+
+	resp.Body = &releaseOnClose{ReadCloser: resp.Body, release: func() { stop(); cancel() }}
+	return resp, nil
+}
+
+type releaseOnClose struct {
+	io.ReadCloser
+	release func()
+}
+
+func (b *releaseOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.release()
+	return err
 }
 
 type QYWechatQrcodeConfig struct {
@@ -119,12 +247,24 @@ type QYWechatQrcodeConfig struct {
 	State       string `json:"state"`
 }
 
+type AuthInfo struct {
+	LoginDomain            string               `json:"loginDomain"`
+	AuthID                 string               `json:"authId"`
+	AuthType               string               `json:"authType"`
+	AuthName               string               `json:"authName"`
+	SubType                string               `json:"subType"`
+	LoginURL               string               `json:"loginUrl"`
+	QYWechatQrcodeConf     QYWechatQrcodeConfig `json:"qywechatQrcodeConf,omitempty"`
+	ThirdAuthQrcodeTimeout int                  `json:"thirdAuthQrcodeTimeout,omitempty"`
+}
+
 type LoginOptions struct {
-	DeviceID   string
-	Cookies    []Cookie
-	TOTPSecret string
-	// Prompter, when non-nil, answers captcha and verification-code steps.
-	Prompter Prompter
+	DeviceID         string
+	MACAddresses     []string
+	Cookies          []Cookie
+	TOTPSecret       string
+	ChallengeHandler authchallenge.Handler
+	Prompter         Prompter
 }
 
 type LoginResult struct {
@@ -136,107 +276,75 @@ type LoginResult struct {
 type LoginMethod interface {
 	AuthType() string
 	LoginDomain() string
-	login(*Session, AuthInfo) error
+	login(s *Session, authInfo AuthInfo) error
 }
 
-func (s *Session) randSdpId(n ...int) string {
-	length := 8
-	if len(n) > 0 {
-		length = n[0]
+func (s *Session) randSdpId() string {
+	const chars = "0123456789abcdef"
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = chars[mathrand.Intn(len(chars))]
 	}
-	hexes := make([]byte, length)
-	for i := 0; i < length; i++ {
-		hexes[i] = "0123456789abcdef"[mathrand.Intn(16)]
-	}
-	return string(hexes)
+	return string(b)
 }
 
-func (s *Session) withGraphCheckCode(process func(string) (int, error), graphCodeFile string) error {
-	graphCheckCodeEnable, err := process("")
-	if err != nil {
-		return err
-	}
+func (s *Session) GetAuthInfoList() ([]AuthInfo, error) {
+	_, authInfoList, err := s.authConfig(false, false)
+	return authInfoList, err
+}
 
-	for attempt := 1; graphCheckCodeEnable == 1 && attempt <= maxAttempts; attempt++ {
-		if attempt > 1 {
-			log.Printf("Captcha attempt %d/%d", attempt, maxAttempts)
+func (s *Session) handler() authchallenge.Handler {
+	if s.challengeHandler != nil {
+		return s.challengeHandler
+	}
+	return authchallenge.NewCLIHandler(authchallenge.CLIOptions{})
+}
+
+func (s *Session) withGraphCheckCode(process func(graphCheckCode string) (int, error), graphCodeFile string) error {
+	graphCheckCode := ""
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		graphCheckCodeEnable, err := process(graphCheckCode)
+		if err != nil {
+			return err
+		}
+		if graphCheckCodeEnable == 0 {
+			return nil
+		}
+		if attempt == maxAttempts {
+			return fmt.Errorf("graph check code failed after %d attempts", maxAttempts)
 		}
 
+		log.Println("Graph check code required")
 		imgData, err := s.checkCode()
 		if err != nil {
 			return err
 		}
 
-		_, _, err = s.authConfig(false, true)
+		message := ""
+		if graphCodeFile != "" {
+			message = fmt.Sprintf("Graph check code saved to %s. Please enter the code:", graphCodeFile)
+		}
+		response, err := s.handler().HandleClickCaptcha(authchallenge.ClickCaptchaChallenge{
+			Image:      imgData,
+			OutputPath: graphCodeFile,
+			Message:    message,
+		})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get graph check code: %w", err)
 		}
 
-		var graphCheckCode string
-		if s.prompter != nil {
-			raw, promptErr := s.prompter.GraphCheckCode(imgData)
-			if promptErr != nil {
-				return fmt.Errorf("failed to get captcha input: %w", promptErr)
-			}
-			graphCheckCode, err = canonicalizeGraphCheckCode(raw, imgData)
-			if err != nil {
-				return fmt.Errorf("invalid captcha input: %w", err)
-			}
-		} else if graphCodeFile != "" {
-			if writeErr := os.WriteFile(graphCodeFile, imgData, 0600); writeErr != nil {
-				return fmt.Errorf("write graph check code image %q: %w", graphCodeFile, writeErr)
-			} else {
-				if chmodErr := os.Chmod(graphCodeFile, 0600); chmodErr != nil {
-					return fmt.Errorf("secure graph check code image: %w", chmodErr)
-				}
-				log.Printf("Graph check code saved to %s", graphCodeFile)
-			}
-
-			log.Print("Please enter the graph check code JSON: ")
-			_, err = fmt.Scanln(&graphCheckCode)
-			if err != nil {
-				return err
-			}
-		} else {
-			graphCheckCode, err = serveCaptchaInBrowser(imgData, 5*time.Minute)
-			if err != nil {
-				return fmt.Errorf("failed to get captcha input: %w", err)
-			}
-		}
-
-		log.DebugPrintf("graphCheckCode submitted: %s", graphCheckCode)
-
-		graphCheckCodeEnable, err = process(graphCheckCode)
+		graphCheckCode, err = graphCheckCodeFromResponse(response, imgData)
 		if err != nil {
-			return err
+			return fmt.Errorf("invalid graph check code input: %w", err)
 		}
-
-		if graphCheckCodeEnable == 0 {
-			return nil
-		}
-
-		log.Printf("Captcha verification failed (attempt %d/%d), retrying with new captcha...", attempt, maxAttempts)
 	}
-
-	if graphCheckCodeEnable != 0 {
-		return fmt.Errorf("captcha verification failed after %d attempts", maxAttempts)
-	}
-	return nil
-}
-
-func (s *Session) GetAuthInfoList() ([]AuthInfo, error) {
-	_, list, err := s.authConfig(false, true)
-	return list, err
+	return fmt.Errorf("graph check code failed after %d attempts", maxAttempts)
 }
 
 func (s *Session) continueAuth(step authStep) error {
-	for attempt := 0; attempt < maxAuthSteps; attempt++ {
-		log.DebugPrintf("Continue authentication: service=%s smsMode=%d", step.Service, step.SMSMode)
-
+	for i := 0; i < maxAuthSteps && step.Service != ""; i++ {
 		var err error
 		switch step.Service {
-		case "":
-			return nil
 		case "auth/authCheck":
 			step, err = s.authCheck()
 		case "auth/sms":
@@ -245,21 +353,33 @@ func (s *Session) continueAuth(step authStep) error {
 			step, err = s.completeCustomSMS()
 		case "auth/totp":
 			step, err = s.completeTOTP(step)
+		case "auth/radius", "auth/challenge":
+			step, err = s.completeRadius(step.Service)
+		case "auth/accessCheck":
+			step, err = s.accessCheck()
+		case "auth/preEnhancedAuth", "auth/enhancedConfirm", "auth/enhancedDone":
+			step, err = s.completeEnhancedAuth(step)
+		case "auth/bindAuthDevice":
+			step, err = s.bindAuthDevice()
+		case "auth/token":
+			return fmt.Errorf("unsupported token authentication subtype")
 		default:
-			return fmt.Errorf("unsupported next authentication service: %s", step.Service)
+			return fmt.Errorf("unsupported authentication service: %s", step.Service)
 		}
 		if err != nil {
 			return err
 		}
 	}
-
-	return fmt.Errorf("authentication chain exceeded %d steps", maxAuthSteps)
+	if step.Service != "" {
+		return fmt.Errorf("authentication did not complete after %d steps (next: %s)", maxAuthSteps, step.Service)
+	}
+	return nil
 }
 
 func (s *Session) completeSMS(step authStep) (authStep, error) {
 	switch step.SMSMode {
 	case smsWithAuthID:
-		// HITSZ-style gateways refresh the ticket-bearing auth config before
+		// Gateways that issue an authId require a mod=1 authConfig refresh before
 		// querying the phone number and sending the SMS.
 		if _, _, err := s.authConfig(true, true); err != nil {
 			return authStep{}, err
@@ -272,9 +392,9 @@ func (s *Session) completeSMS(step authStep) (authStep, error) {
 
 	phoneNumbers, err := s.phoneNumber(step.AuthID)
 	if err != nil {
-		log.Printf("Warning: failed to get registered phone number: %v", err)
+		log.Printf("Warning: failed to get phone number: %v", err)
 	} else if len(phoneNumbers) > 0 {
-		log.Printf("SMS destination confirmed (%d registered number(s))", len(phoneNumbers))
+		log.Printf("Found %d registered phone number(s) for SMS authentication", len(phoneNumbers))
 	}
 
 	if err := s.authSms(step); err != nil {
@@ -290,43 +410,38 @@ func (s *Session) completeSMS(step authStep) (authStep, error) {
 	return s.smsCheckCode(step)
 }
 
-func (s *Session) loginResult(username string) LoginResult {
-	result := LoginResult{Username: username}
-	for _, cookie := range s.client.Jar.Cookies(&url.URL{Host: s.baseHost, Scheme: "https"}) {
-		if cookie.Name == "sid" {
-			result.SID = cookie.Value
-		}
-		result.Cookies = append(result.Cookies, Cookie{
-			Host:   s.baseHost,
-			Scheme: "https",
-			Name:   cookie.Name,
-			Value:  cookie.Value,
-		})
-	}
-	return result
-}
-
 func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, error) {
-	for _, cookie := range opts.Cookies {
-		if cookie.Host != s.baseHost || cookie.Scheme != "https" || cookie.Name == "" {
-			continue
+	if len(opts.Cookies) > 0 {
+		for _, cookie := range opts.Cookies {
+			if cookie.Host != s.baseHost || cookie.Scheme != "https" || cookie.Name == "" {
+				continue
+			}
+			c := &http.Cookie{
+				Name:  cookie.Name,
+				Value: cookie.Value,
+			}
+			s.client.Jar.SetCookies(&url.URL{Host: cookie.Host, Scheme: cookie.Scheme}, []*http.Cookie{c})
 		}
-		s.client.Jar.SetCookies(
-			&url.URL{Host: s.baseHost, Scheme: "https"},
-			[]*http.Cookie{{Name: cookie.Name, Value: cookie.Value}},
-		)
 	}
 
 	s.deviceID = opts.DeviceID
+	s.macAddresses = opts.MACAddresses
 	s.totpSecret = opts.TOTPSecret
-	s.prompter = opts.Prompter
-	deviceEnvironment, err := json.Marshal(struct {
+	switch {
+	case opts.ChallengeHandler != nil:
+		s.challengeHandler = opts.ChallengeHandler
+	case opts.Prompter != nil:
+		s.challengeHandler = newPrompterChallengeHandler(opts.Prompter)
+	default:
+		s.challengeHandler = authchallenge.NewCLIHandler(authchallenge.CLIOptions{})
+	}
+	envBytes, err := json.Marshal(struct {
 		DeviceID string `json:"deviceId"`
 	}{DeviceID: opts.DeviceID})
 	if err != nil {
-		return LoginResult{}, fmt.Errorf("encode device environment: %w", err)
+		return LoginResult{}, err
 	}
-	s.env = base64.StdEncoding.EncodeToString(deviceEnvironment)
+	s.env = base64.StdEncoding.EncodeToString(envBytes)
 
 	isLogin, authInfoList, err := s.authConfig(false, true)
 	if err != nil {
@@ -352,7 +467,11 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 		}
 	}
 	if foundAuthInfo == nil {
-		log.Printf("Available authentication methods: %+v", authInfoList)
+		summaries := make([]string, 0, len(authInfoList))
+		for _, info := range authInfoList {
+			summaries = append(summaries, fmt.Sprintf("%s/%s (%s)", info.AuthType, info.LoginDomain, info.AuthName))
+		}
+		log.Printf("Available authentication methods: %s", strings.Join(summaries, ", "))
 		return LoginResult{}, fmt.Errorf("auth type/login domain combination not found: auth type: %s, login domain: %s", method.AuthType(), method.LoginDomain())
 	}
 
@@ -367,7 +486,11 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 		return LoginResult{}, err
 	}
 
-	err = s.continueAuth(authStep{Service: "auth/authCheck"})
+	nextService := s.nextService
+	if nextService == "" {
+		nextService = "auth/authCheck"
+	}
+	err = s.continueAuth(authStep{Service: nextService})
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -378,4 +501,30 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 	}
 
 	return s.loginResult(username), nil
+}
+
+func (s *Session) loginResult(username string) LoginResult {
+	sid, cookies := sessionCookies(s)
+	return LoginResult{
+		Username: username,
+		SID:      sid,
+		Cookies:  cookies,
+	}
+}
+
+func sessionCookies(s *Session) (string, []Cookie) {
+	cookies := make([]Cookie, 0)
+	sid := ""
+	for _, cookie := range s.client.Jar.Cookies(&url.URL{Host: s.baseHost, Scheme: "https"}) {
+		if cookie.Name == "sid" {
+			sid = cookie.Value
+		}
+		cookies = append(cookies, Cookie{
+			Host:   s.baseHost,
+			Scheme: "https",
+			Name:   cookie.Name,
+			Value:  cookie.Value,
+		})
+	}
+	return sid, cookies
 }

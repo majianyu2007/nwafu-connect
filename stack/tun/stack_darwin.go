@@ -26,6 +26,7 @@ type Endpoint struct {
 	ifceIndex int
 	readLock  sync.Mutex
 	writeLock sync.Mutex
+	configMu  sync.RWMutex
 	ip        net.IP
 
 	ipSetBuilder netaddr.IPSetBuilder
@@ -90,17 +91,17 @@ func (s *Stack) AddDnsServer(dnsServer string, targetHost string) error {
 	return nil
 }
 
-func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client.IPResource) (*Stack, error) {
+func NewStack(vpnClient client.Client, dnsHijack, fakeIP bool, ipResources []client.IPResource) (*Stack, error) {
 	var err error
 	s := &Stack{}
 	s.setIPResources(ipResources)
 	s.fakeIP = fakeIP
 	s.endpoint = &Endpoint{
-		client: client,
+		client: vpnClient,
 	}
 	s.endpoint.ipSetBuilder = netaddr.IPSetBuilder{}
 
-	s.endpoint.ip, err = client.IP()
+	s.endpoint.ip, err = vpnClient.IP()
 	if err != nil {
 		return nil, err
 	}
@@ -144,8 +145,7 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 	s.endpoint.ifceIndex = netIfce.Index
 	log.Printf("Interface Name: %s, index %d\n", tunName, netIfce.Index)
 
-	// We need this dialer to bind to device otherwise packets will not be sent via TUN
-	// Doesn't work on macOS. See  https://github.com/Mythologyli/zju-connect/pull/44#issuecomment-1784050022
+	// Bind to the TUN interface so sockets route through utun on macOS.
 	s.endpoint.tcpDialer = &net.Dialer{
 		LocalAddr: &net.TCPAddr{
 			IP:   s.endpoint.ip,
@@ -153,14 +153,13 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 		},
 		Control: func(network, address string, c syscall.RawConn) error { // By ChenXuzheng
 			return c.Control(func(fd uintptr) {
-				if bindErr := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_RECVIF, s.endpoint.ifceIndex); bindErr != nil {
+				if bindErr := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, s.endpoint.ifceIndex); bindErr != nil {
 					log.Println("Warning: failed to bind to interface", s.endpoint.ifceName)
 				}
 			})
 		},
 	}
 
-	// Doesn't work on macOS. See  https://github.com/Mythologyli/zju-connect/pull/44#issuecomment-1784050022
 	s.endpoint.udpDialer = &net.Dialer{
 		LocalAddr: &net.UDPAddr{
 			IP:   s.endpoint.ip,
@@ -168,7 +167,7 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 		},
 		Control: func(network, address string, c syscall.RawConn) error { // By ChenXuzheng
 			return c.Control(func(fd uintptr) {
-				if bindErr := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_RECVIF, s.endpoint.ifceIndex); bindErr != nil {
+				if bindErr := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, s.endpoint.ifceIndex); bindErr != nil {
 					log.Println("Warning: failed to bind to interface", s.endpoint.ifceName)
 				}
 			})
@@ -186,5 +185,32 @@ func NewStack(client client.Client, dnsHijack, fakeIP bool, ipResources []client
 			}
 		}
 	}
+	client.RegisterIPUpdateHandler(vpnClient, s.updateIP)
 	return s, nil
+}
+
+func (s *Stack) updateIP(ip net.IP) error {
+	newIP := ip.To4()
+	if newIP == nil {
+		return fmt.Errorf("virtual IP update is not IPv4")
+	}
+	s.endpoint.configMu.Lock()
+	defer s.endpoint.configMu.Unlock()
+	oldIP := append(net.IP(nil), s.endpoint.ip...)
+	if oldIP.Equal(newIP) {
+		return nil
+	}
+	add := exec.Command("ifconfig", s.endpoint.ifceName, "inet", newIP.String(), newIP.String(), "netmask", "255.255.255.255", "alias")
+	if output, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("add virtual IP: %w: %s", err, output)
+	}
+	del := exec.Command("ifconfig", s.endpoint.ifceName, "inet", oldIP.String(), "-alias")
+	if output, err := del.CombinedOutput(); err != nil {
+		_ = exec.Command("ifconfig", s.endpoint.ifceName, "inet", newIP.String(), "-alias").Run()
+		return fmt.Errorf("remove old virtual IP: %w: %s", err, output)
+	}
+	s.endpoint.ip = append(net.IP(nil), newIP...)
+	s.endpoint.tcpDialer.LocalAddr = &net.TCPAddr{IP: append(net.IP(nil), newIP...)}
+	s.endpoint.udpDialer.LocalAddr = &net.UDPAddr{IP: append(net.IP(nil), newIP...)}
+	return nil
 }

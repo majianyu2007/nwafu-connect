@@ -2,11 +2,12 @@ package dial
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,7 +17,10 @@ import (
 	"github.com/things-go/go-socks5/statute"
 )
 
-const proxyHandshakeTimeout = 10 * time.Second
+const (
+	proxyHandshakeTimeout      = 10 * time.Second
+	maxHTTPProxyResponseHeader = 64 << 10
+)
 
 func beginProxyHandshake(ctx context.Context, connection net.Conn) (func() bool, error) {
 	deadline := time.Now().Add(proxyHandshakeTimeout)
@@ -87,9 +91,13 @@ func (d *Dialer) dialDirectWithHTTPProxy(ctx context.Context, usedAddr string) (
 	if err := request.Write(connection); err != nil {
 		return nil, fmt.Errorf("write HTTP proxy CONNECT request: %w", err)
 	}
-	reader := bufio.NewReader(connection)
+	limited := &io.LimitedReader{R: connection, N: maxHTTPProxyResponseHeader + 1}
+	reader := bufio.NewReader(limited)
 	response, err := http.ReadResponse(reader, request)
 	if err != nil {
+		if limited.N == 0 {
+			return nil, fmt.Errorf("HTTP proxy CONNECT response exceeds %d bytes", maxHTTPProxyResponseHeader)
+		}
 		return nil, fmt.Errorf("read HTTP proxy CONNECT response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
@@ -106,7 +114,12 @@ func (d *Dialer) dialDirectWithHTTPProxy(ctx context.Context, usedAddr string) (
 
 	keepConnection = true
 	if reader.Buffered() != 0 {
-		return &bufferedProxyConn{Conn: connection, reader: reader}, nil
+		buffered := make([]byte, reader.Buffered())
+		if _, err := io.ReadFull(reader, buffered); err != nil {
+			keepConnection = false
+			return nil, fmt.Errorf("read buffered HTTP proxy bytes: %w", err)
+		}
+		return &bufferedProxyConn{Conn: connection, reader: bufio.NewReader(io.MultiReader(bytes.NewReader(buffered), connection))}, nil
 	}
 	return connection, nil
 }

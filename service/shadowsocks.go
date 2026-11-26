@@ -177,7 +177,8 @@ func udpRemote(c net.PacketConn, shadow func(net.PacketConn) net.PacketConn, dia
 
 		payload := buf[len(targetAddr):n]
 
-		targetConn := nm.Get(raddr.String())
+		natKey := raddr.String() + "|" + targetAddr.String()
+		targetConn := nm.Get(natKey)
 		if targetConn == nil {
 			targetConn, err = dialer.Dial(context.Background(), "udp", targetAddr.String())
 			if err != nil {
@@ -185,12 +186,12 @@ func udpRemote(c net.PacketConn, shadow func(net.PacketConn) net.PacketConn, dia
 				continue
 			}
 
-			nm.Add(raddr, targetConn)
-			go func() {
-				_ = udpServerToClientCopy(c, raddr, targetConn, nm.timeout)
-				nm.Del(raddr.String())
-				targetConn.Close()
-			}()
+			nm.Set(natKey, targetConn)
+			go func(key string, peer net.Addr, conn net.Conn) {
+				_ = udpServerToClientCopy(c, peer, conn, nm.timeout)
+				nm.Del(key)
+				conn.Close()
+			}(natKey, raddr, targetConn)
 		}
 
 		log.Printf("[SS][UDP] %s <-> %s", raddr, targetAddr)

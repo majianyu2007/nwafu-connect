@@ -2,8 +2,8 @@ package auth
 
 import (
 	"crypto/rand"
-	"errors"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -114,12 +114,11 @@ func TestAuthConfigReturnsGatewayFailure(t *testing.T) {
 }
 
 func testSessionForServer(server *httptest.Server) *Session {
-	session := NewSession("vpn.example.com")
+	session := NewSession("vpn.example.com", nil)
 	session.baseURL = server.URL
 	session.client = server.Client()
 	return session
 }
-
 
 type failingAuthResponseReader struct {
 	err error

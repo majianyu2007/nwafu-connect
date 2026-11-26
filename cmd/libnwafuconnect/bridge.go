@@ -139,6 +139,7 @@ func (b *bridge) Start(configJSON string) string {
 		return errorResponse(stateIdle, err).json()
 	}
 
+	var prevSess session
 	b.mu.Lock()
 	if b.run != nil {
 		state := b.stateLocked()
@@ -146,10 +147,8 @@ func (b *bridge) Start(configJSON string) string {
 			b.mu.Unlock()
 			return errorResponse(state, errors.New("a session is already active; call NcStop first")).json()
 		}
-		// Previous run failed or stopped: release it before starting again.
-		if b.run.sess != nil {
-			_ = b.run.sess.Close()
-		}
+		// Previous run failed or stopped: release it outside the lock before starting again.
+		prevSess = b.run.sess
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{
@@ -160,6 +159,10 @@ func (b *bridge) Start(configJSON string) string {
 	}
 	b.run = r
 	b.mu.Unlock()
+
+	if prevSess != nil {
+		_ = prevSess.Close()
+	}
 
 	go func() {
 		defer close(r.done)
@@ -190,6 +193,7 @@ func (b *bridge) Submit(kind, value string) string {
 	if kind != r.pending.needs {
 		resp := promptResponse(*r.pending)
 		b.mu.Unlock()
+		resp.OK = false
 		resp.Error = fmt.Sprintf("expected %q input, got %q", resp.needsValue(), kind)
 		return resp.json()
 	}
@@ -197,6 +201,7 @@ func (b *bridge) Submit(kind, value string) string {
 	if value == "" {
 		resp := promptResponse(*r.pending)
 		b.mu.Unlock()
+		resp.OK = false
 		resp.Error = "empty value"
 		return resp.json()
 	}

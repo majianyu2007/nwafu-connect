@@ -6,8 +6,18 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-26
+
 ### Added
 
+- 同步上游 `zju-connect` 全部 aTrust 核心增强（继续保持纯 aTrust 架构，不引入 EasyConnect）：
+  - 新增 `underlay/`、`internal/platformdialer/` 与 `internal/keylog/`：支持底层网卡绑定（`bind_interface` / `auto_detect_interface`）、网关独立 DNS（`local_dns_server`）、调试 PCAP 导出（`debug_pcap_file`）与 NSS TLS Key Log（`debug_tls_log_file`）。
+  - 新增 aTrust 定时会话刷新（`session_refresh_interval`）与自动回写最新 Cookie、防中间人校验（anti-MITM）、服务端清单解析（TCP 隧道 0-RTT）、增强认证链、设备绑定、WAN/LAN 节点组与动态虚拟 IP 实时更新。
+  - 新增 `koanf` + `pflag` 统一配置合并机制，支持 `NWAFU_CONNECT_*` 环境变量与 `默认 < TOML < 环境变量 < 显式命令行参数` 优先级，同时兼容旧单横杠参数。
+  - 新增 `client/authchallenge/` 统一交互挑战接口与本地回环浏览器输入页。
+  - 新增 `mobile/mobile_android.go`（纯 aTrust Android `VpnService` `gomobile` 绑定）。
+- 扩展多平台全架构发布流水线（`.github/workflows/release.yml`）：统一在 `v*` Tag 发布全部 17 架构 CLI、Windows/macOS/Linux `amd64`/`arm64` 安装版与便携版、Android `jniLibs`/`aar`、iOS `NwafuConnect.xcframework`、macOS 通用动态库及 `SHA256SUMS.txt`。
+- 桌面托盘新增“断开连接”、一键复制本地代理地址以及校园网网关不可达友好提示。
 - 新增安全的本地验证码输入页，在无可交互终端时接收短信验证码，并提供随机表单令牌、输入校验、超时和一次提交保护。
 - 完善企业微信二维码登录：使用网关下发配置，支持二维码下载、终端渲染、本地状态页、轮询和严格的回调校验。
 - 新增 IPv4 资源区间索引和域名后缀索引，供拨号器、L3、TCP tunnel、TUN 与 DNS 解析共用。
@@ -16,6 +26,9 @@
 
 ### Changed
 
+- 依据 `DESIGN.md` 全面重构并美化所有 WebUI（受管浏览器资源门户、点选图形验证码页、本地验证码输入页、企业微信扫码状态页）及 Fyne 桌面主题与设置窗口，采用单主色 `#0066cc`、平铺交替表面、去阴影与胶囊交互风格。
+- DNS 解析器同步上游多祖先域名 Trie、多 IP 轮询、去重并发查询（支持取消）及 300ms TCP 对冲回退，并保留受管浏览器模式固定端点 DoH 隔离能力。
+- 拨号器与网络栈同步 `EnableTCPPrefL3` 协议优选，TCP 端口转发改经 `dial.Dialer` 路由。
 - 重做受管浏览器资源首页，采用清晰的会话状态、资源搜索、类型筛选、结果计数、空状态和显式地址操作。
 - 资源首页首屏仅渲染 18 项，其余资源按需加载；搜索和筛选通过动画帧合并更新，避免大列表布局卡顿。
 - 受管浏览器改为严格 VPN-only 路由：网关未授权的目的地会被拒绝，不再回退到宿主机网络。
@@ -27,6 +40,15 @@
 
 ### Fixed
 
+- 修复 `main.go` 中 TUN 模式未赋值 `vpnStack = vpnTUNStack` 导致的必现空指针崩溃，以及 `clientIP == nil` 边界问题。
+- 修复 `client/atrust` 在会话失效（`10000004`/`75500002`）时直接 `log.Fatalf` 终止进程的问题，改为返回 `auth.ErrSessionInvalid` 并通过回调优雅关闭（兼容 CLI 与 `embed/` 宿主）。
+- 修复 `stack/tun/stack_darwin.go` 错误使用 `IP_RECVIF` 而非 `IP_BOUND_IF` 的 socket 绑定问题，以及 `gvisor.Stack` 异常退出时的资源泄漏。
+- 修复 `service/shadowsocks.go` UDP NAT 映射键冲突问题。
+- 修复 `embed/` 在网关不可达（例如校园网内部）时重复清零缓存重试、关闭未等待协议栈退出及 Windows 原子文件替换问题。
+- 修复 `cmd/libnwafuconnect` C ABI 空指针防护、提交校验返回值 `ok` 标记及持锁关闭旧会话问题。
+- 修复 `cmd/nwafu-connect-proxy` 响应行缺少换行符时可能引发的无界内存读取问题。
+- 修复 Windows 桌面端取消勾选开机自启时 `reg.exe delete` 报错、设置页保存覆盖高级 TOML 编辑、切换认证方式不联动登录域、托盘 45 秒超时提前放弃交互式登录、休眠唤醒离线误重连、UI 线程外通知调用、Windows 强制强杀子进程及未回收打开目录/链接子进程等桌面端问题。
+- 修复原 `.github/workflows/desktop.yml` 使用 `GITHUB_TOKEN` 创建 Release 导致 `build.yml` 未触发、17 架构 CLI 资产缺失的问题，以及 `Dockerfile` 硬编码 `GOARCH=amd64` 影响 ARM64 镜像的问题。
 - 修复资源首页脚本状态变量未定义，导致搜索、筛选和“显示更多”失效的问题。
 - 修复图形验证码挑战被误判为认证失败，以及密码或短信响应缺少 ticket 仍被接受的问题。
 - 修复 TOTP 下一服务、action、task ID、auth ID 和 token 字段映射不一致的问题。
@@ -59,4 +81,5 @@
 - UDP 转发增加全局字节预算、每连接队列上限、连接上限与 LRU 淘汰。
 - HTTP 代理限制总空闲连接、单主机连接、响应头等待时间和活跃 CONNECT 隧道数量。
 
-[Unreleased]: https://github.com/majianyu2007/nwafu-connect/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/majianyu2007/nwafu-connect/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/majianyu2007/nwafu-connect/compare/v1.4.1...v1.5.0

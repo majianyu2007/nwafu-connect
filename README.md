@@ -1,37 +1,78 @@
 # NWAFU Connect
 
-NWAFU Connect 是面向西北农林科技大学 `vpn.nwafu.edu.cn` 的第三方 aTrust 命令行客户端。它登录学校 VPN、读取服务端下发的资源规则，并提供 SOCKS5、HTTP、DNS、端口转发或 TUN 接入。
+> **免责声明**
+>
+> 本程序**按原样提供**，与西北农林科技大学及深信服无隶属关系。作者不对程序的正确性或可靠性提供保证，请遵守学校网络和账户管理规定，使用本程序产生的一切后果由使用者自行承担。**请勿提交或分享账号、密码、TOTP 密钥、`config.toml` 或 `client_data.json`。**
 
-> 本项目与西北农林科技大学、深信服无隶属关系。请遵守学校网络和账户管理规定。不要提交账号、密码、TOTP 密钥、`config.toml` 或 `client_data.json`。
+---
 
-## 支持状态
+中文 | [English](README_en.md)
 
-网关当前公布的认证方式可通过 `nwafu-connect -auth-info` 查看：
+NWAFU Connect 是面向西北农林科技大学 `vpn.nwafu.edu.cn` 的第三方 **aTrust** 开源客户端（桌面托盘 GUI + 命令行 CLI + 嵌入式 C/Go/移动端核心库）。本仓库基于上游 [zju-connect](https://github.com/Mythologyli/zju-connect) 与 [EasierConnect](https://github.com/lyc8503/EasierConnect) 演进而来，已移除学校不再使用的 EasyConnect 协议，专注于 NWAFU 的 aTrust 登录、受管浏览器、本地代理（SOCKS5 / HTTP / Shadowsocks / DNS / 端口转发）和系统 TUN 虚拟网卡接入。
 
-| 认证方式 | aTrust 标识 | 状态 |
+> **校园网环境提示**
+>
+> **在校园网内部无法直接连接 `vpn.nwafu.edu.cn`**，且校园网内本就可以直接访问校内资源，无需开启 VPN。仅在校外网络（蜂窝热点、家庭宽带等）访问校内资源时使用本客户端；桌面版在检测到网关不可达时会自动暂停重连并给出提示。
+
+## 下载与多平台支持
+
+每次发布（`v*` Tag）均通过 GitHub Actions 自动构建并附带 `SHA256SUMS.txt` 校验文件：
+
+| 平台 | 发布包形态 | 覆盖架构 | 说明 |
+| --- | --- | --- | --- |
+| **Windows 桌面版** | 安装版（`-setup.exe`）与绿色便携版（`-portable.zip`） | `amd64`, `arm64` | 系统托盘 + 设置窗口 + 一键受管浏览器 + `nwafu-connect` + `nwafu-connect-proxy` |
+| **macOS 桌面版** | 安装镜像（`.dmg`）与便携版（`-portable.zip`） | `arm64` (Apple Silicon), `amd64` (Intel) | 原生 `.app` 应用包（见下方解除隔离命令） |
+| **Linux 桌面版** | 安装包（`.deb`）与便携版（`-portable.tar.gz`） | `amd64`, `arm64` | 系统托盘 + 桌面入口 + 受管浏览器 |
+| **全平台命令行 CLI** | `nwafu-connect-<os>-<arch>.zip`（17 个目标） | Windows (`amd64/386/arm64`)、macOS (`amd64/arm64`)、Linux (`amd64/386/arm64/armv5/armv6/armv7/riscv64/mips/mipsle/mips64/mips64le`) | 纯 Go 零 CGO，含 `nwafu-connect`、`nwafu-connect-proxy` 与示例配置 |
+| **Android 核心库** | `-android-jnilibs.zip`（C ABI `.so`）与 `-android-aar.zip`（`gomobile` `VpnService` `.aar`） | `arm64-v8a`, `armeabi-v7a`, `x86_64` | 供宿主 Android App / Flutter / Kotlin 集成代理或 TUN VPN |
+| **Apple 核心库** | `-ios-xcframework.zip` 与 `-macos-universal-lib.zip` | iOS 真机/模拟器 `arm64`、`macOS` Universal (`arm64`+`amd64`) | 静态 `NwafuConnect.xcframework` 与通用动态库，供宿主 iOS/macOS App 集成 |
+| **Docker 镜像** | 多架构 Distroless 镜像 | `linux/amd64`, `linux/arm64` | 见 [`docs/docker.md`](docs/docker.md) |
+
+> macOS 首次运行未公证应用/命令行二进制前，请在终端解除隔离属性：
+> ```bash
+> sudo xattr -rd com.apple.quarantine "/Applications/NWAFU Connect.app"
+> # 或对 CLI 二进制：
+> sudo xattr -rd com.apple.quarantine ./nwafu-connect ./nwafu-connect-proxy
+> ```
+
+### GUI 客户端选择建议
+
+- **NWAFU Connect Desktop（推荐）**：直接在本仓库 [Releases](https://github.com/majianyu2007/nwafu-connect/releases) 下载对应系统的安装版或便携版。开箱预置西农网关 `vpn.nwafu.edu.cn:443`、支持 LDAP+TOTP / 短信 / 企业微信扫码、一键拉起隔离受管浏览器与校内资源门户、支持托盘复制本地代理地址与休眠唤醒自动重连。
+- **第三方兼容 aTrust GUI 客户端**：如果你习惯使用通用多校 VPN GUI，也可以尝试 [Chenx Dust](https://github.com/chenx-dust) 开发的 [EZ4Connect](https://github.com/chenx-dust/EZ4Connect)（支持 aTrust 协议）或 [kowyo](https://github.com/kowyo) 开发的 [hitsz-connect-verge](https://github.com/kowyo/hitsz-connect-verge)。配置时请将协议选为 **aTrust**，服务器地址设为 `vpn.nwafu.edu.cn:443`，LDAP 登录域填写 `LDAP`。
+- **移动端独立 App（APK / 未签名 IPA）**：当前仓库已直接提供可复用的 Android `.aar` / `jniLibs .so` 与 iOS `NwafuConnect.xcframework`（以及 `embed` Go 包与 `scripts/build-lib.sh` 构建脚本），供移动端外壳直接接入代理或 `VpnService` / `NEPacketTunnelProvider`。独立 Android APK 与未签名 iOS IPA 外壳应用计划在后续独立 App 工程中持续跟进。
+
+## 认证方式支持状态
+
+在校外网络环境下，可通过 `nwafu-connect -auth-info` 查询网关当前公布的认证方式：
+
+| 认证方式 | aTrust 标识 (`auth_type` / `login_domain`) | 状态 |
 | --- | --- | --- |
 | LDAP（学号、密码、TOTP） | `auth/psw` / `LDAP` | 已完成真实账号验证 |
-| 手机号、短信验证码 | `auth/smsCheckCode` / `sms73926` | 已实现交互流程，待真实号码验证 |
-| 企业微信 | `auth/qywechat` / `wechat` | 已完成真实账号全流程验证（WebUI / CLI / PNG） |
+| 企业微信扫码（WebUI / CLI / PNG） | `auth/qywechat` / `wechat` | 已完成真实账号全流程验证 |
+| 手机号 + 短信验证码 | `auth/smsCheckCode` / `sms73926` | 已实现交互流程（支持本地浏览器/终端输入验证码），待真实号码验证 |
+| CAS / HTTPS OAuth2（通用 aTrust） | `auth/cas`、`auth/httpsOauth2` | 已同步上游交互回调与增强认证支持 |
 
-本仓库只支持 aTrust。学校已经停用的 EasyConnect 实现及配置已删除。
+## 使用模式对比
 
-## 快速开始
+| 使用场景 | 推荐模式 | 特点 |
+| --- | --- | --- |
+| 日常查论文、进教务/图书馆等校内网页 | **受管浏览器模式**（`browser_mode = true` 或桌面版默认模式） | 隔离独立 Chromium Profile，不改系统代理；严格 VPN-only 防泄漏；缺失网关 DNS 时自动使用加密 DoH 避免 Fake-IP 污染；自带资源导航门户 |
+| 终端、浏览器扩展、分流工具（Clash/Mihomo 等）接入 | **SOCKS5 / HTTP 代理模式**（CLI 默认） | 默认监听 `127.0.0.1:1080`（SOCKS5）与 `127.0.0.1:1081`（HTTP），支持服务端 IP/域名规则自动分流 |
+| 需要全系统透明访问或不支持代理的桌面客户端 | **TUN 虚拟网卡模式**（`-tun-mode`） | 创建系统虚拟网卡并自动下发路由与 Fake-IP DNS 劫持（需管理员权限） |
+| 仅需要 SSH / SFTP / Git 等 TCP 工具接入受管会话 | **`nwafu-connect-proxy` 助手** | 配合 OpenSSH `ProxyCommand` 复用受管浏览器会话的私有回环代理 |
 
-需要 Go 1.25.6。先创建本地配置：
+## 快速开始（命令行 CLI）
+
+从 [Releases](https://github.com/majianyu2007/nwafu-connect/releases) 下载对应平台压缩包，或本地使用 Go 1.25.6+ 编译：
 
 ```bash
-git clone git@github.com:majianyu2007/nwafu-connect.git
+git clone https://github.com/majianyu2007/nwafu-connect.git
 cd nwafu-connect
-```
-
-```bash
 cp config.toml.example config.toml
+chmod 600 config.toml
 ```
 
-### LDAP + TOTP
-
-最小配置：
+### 1. LDAP + TOTP（推荐自动化）
 
 ```toml
 server_address = "vpn.nwafu.edu.cn"
@@ -46,151 +87,106 @@ socks_bind = "127.0.0.1:1080"
 http_bind = "127.0.0.1:1081"
 ```
 
-`totp_secret` 是 Base32 格式的验证器密钥。程序会在 LDAP 密码认证成功后生成当前动态口令，并提交到 aTrust `/passport/v1/auth/token`。
+也可以通过环境变量传入敏感凭据，避免明文落盘：
 
-### 手机号 + 短信验证码
-
-最小配置：
-
-```toml
-server_address = "vpn.nwafu.edu.cn"
-server_port = 443
-auth_type = "auth/smsCheckCode"
-login_domain = "sms73926"
-phone = "86-你的手机号"
-graph_code_file = ""
-client_data_file = ""
-socks_bind = ""
-http_bind = ""
-disable_remote_dns = true
+```bash
+NWAFU_CONNECT_PASSWORD="你的密码" NWAFU_CONNECT_TOTP_SECRET="你的密钥" \
+  ./nwafu-connect --config config.toml
 ```
 
-`phone` 使用“国家代码-手机号”格式，例如 `86-13800138000`。运行 `go run . -config config.toml` 后，客户端先调用 `/passport/v1/public/sendSms`；如果网关要求图形验证码，会打开仅监听 `127.0.0.1` 的交互页面。收到短信后，在终端的 `Please enter the SMS verification code:` 提示处输入验证码。出现 `VPN client started` 才表示短信、ticket 换取和资源获取全链路成功。测试时不要启用 `debug_dump`，也不要频繁触发短信发送。
+### 2. 企业微信扫码登录（WebUI / CLI / PNG）
 
-### 企业微信扫码登录（WebUI / CLI / PNG）
-
-企业微信登录无需填写账号和密码，已使用真实账号完成从扫码、ticket 换取、`authCheck`、资源获取到 VPN 启动的全流程验证。
+无需配置账号密码，同时支持本地回环 Web 状态页、终端半块字符二维码和 `0600` 权限 PNG 文件三种展示方式：
 
 ```toml
 server_address = "vpn.nwafu.edu.cn"
 server_port = 443
 auth_type = "auth/qywechat"
 login_domain = "wechat"
-
-# 三种展示方式默认同时启用，也可独立关闭
 qywechat_qrcode_browser = true
 qywechat_qrcode_terminal = true
 qywechat_qrcode_file = "qywechat_qrcode.png"
-
 client_data_file = "client_data.json"
-socks_bind = "127.0.0.1:1080"
-http_bind = "127.0.0.1:1081"
 ```
 
-二维码支持三种同时或独立使用的输出：
+### 3. 手机号 + 短信验证码
 
-- **WebUI**：打开仅监听 `127.0.0.1` 的临时页面，二维码保持居中，并实时显示“等待扫码”“已扫码，等待确认”“正在完成 VPN 认证”“认证成功”或失败状态。
-- **CLI**：使用紧凑的 ANSI 半块字符渲染可直接扫描的二维码，适合无桌面环境。
-- **PNG 文件**：将企业微信返回的原始二维码保存到 `qywechat_qrcode_file`，文件权限固定为 `0600`；默认文件名已加入 `.gitignore`。
-
-将 `qywechat_qrcode_browser` 或 `qywechat_qrcode_terminal` 设为 `false` 可关闭对应输出；将 `qywechat_qrcode_file` 设为空字符串可禁用文件保存。至少需要启用一种输出方式。
-
-登录流程：
-
-1. 从 `/passport/v1/public/authConfig` 读取网关动态下发的 `appid`、`agentid`、`redirect_uri`、`state` 和二维码超时。
-2. 创建企业微信扫码会话，解析会话 key，并下载官方 PNG。
-3. 按配置展示 WebUI、CLI 和文件输出。
-4. 轮询企业微信的 `QRCODE_SCAN_NEVER`、`QRCODE_SCAN_ING`、`QRCODE_SCAN_FAIL`、`QRCODE_SCAN_SUCC` 状态。
-5. 扫码确认后校验回调的 HTTPS 主机、端口、路径、登录域和 `state`，再向 `/passport/v1/auth/qywechat` 换取 portal ticket。
-6. 解析 NWAFU 实际返回的 `/portal/qrcode_middle.html` ticket，继续 `authCheck`、资源/节点获取和 VPN 启动。
-
-二维码默认 60 秒失效。一次真实验证的关键日志如下：
-
-```text
-Enterprise WeChat QR code scanned; waiting for confirmation
-Perform GET /passport/v1/auth/qywechat
-Perform GET /passport/v1/auth/authCheck
-VPN client started
-HTTP server listening on 127.0.0.1:1081
-SOCKS5 server listening on 127.0.0.1:1080
+```toml
+server_address = "vpn.nwafu.edu.cn"
+server_port = 443
+auth_type = "auth/smsCheckCode"
+login_domain = "sms73926"
+phone = "86-13800138000"
+client_data_file = "client_data.json"
 ```
 
-## 受管浏览器模式
+若网关触发点选图形验证码，客户端会自动打开仅监听 `127.0.0.1` 的本地交互页面；在无交互终端环境下，短信验证码也会自动回退到本地回环网页输入。
 
-如果只需要浏览校内网页，可以启用受管浏览器模式，无需手工配置 SOCKS5、系统代理、TUN 路由或额外分流规则：
+### 4. 受管浏览器模式
 
 ```toml
 browser_mode = true
-browser_url = "" # 留空时显示本次 aTrust 登录动态下发的校内资源首页
-browser_path = "" # 留空时自动发现 Chrome、Edge、Chromium 或 Brave
+browser_url = "" # 留空打开按应用分组的校内资源首页
+browser_path = "" # 留空自动发现 Chrome、Edge、Chromium 或 Brave
 ```
 
-运行 `nwafu-connect -config config.toml` 后：
+启动后不会修改系统代理或污染日常浏览器数据；所有 HTTP/HTTPS 请求走私有随机回环代理，仅允许访问 aTrust 网关授权资源，关闭所有受管浏览器窗口后自动清理临时 Profile 并断开隧道。
 
-1. 客户端先完成 aTrust 登录并读取服务端下发的资源规则。
-2. 在 `127.0.0.1` 的随机端口启动仅供本次浏览器使用的 HTTP CONNECT 代理。
-3. 使用临时独立 profile 启动 Chromium 系浏览器；不会修改系统代理，也不会复用或污染日常浏览器数据。
-4. 浏览器的 HTTP/HTTPS 请求全部进入私有代理；只有 aTrust 网关授权的 IP/域名资源才会进入 VPN，未授权目标会在客户端拒绝，绝不回退到本机直连或本机代理。网关未下发 DNS 时，浏览器模式使用不依赖系统解析器的加密 DoH，避免 Clash/FlClash Fake-IP 污染。QUIC 和未代理的 WebRTC UDP 会被关闭，防止绕过。
-5. 关闭最后一个受管浏览器窗口后，临时 profile 被删除，代理、resolver、隧道和 aTrust 会话按顺序关闭。
+### 5. TUN 虚拟网卡模式注意事项
 
-浏览器模式不会启动配置中的公共 SOCKS5、HTTP、DNS、Shadowsocks 或端口转发监听。默认首页按应用展示本次 aTrust 登录下发的资源名称、说明、全部地址、协议和端口；`browser_url` 仅用于可选的自定义启动页，不是授权或路由规则。
+1. 需要以管理员 / `root` 权限运行。
+2. Windows 用户请前往 [Wintun 官网](https://www.wintun.net) 下载对应架构的 `wintun.dll`，放置于 `nwafu-connect.exe` 同目录。
+3. aTrust 协议下推荐使用：
+   ```bash
+   sudo ./nwafu-connect --config config.toml --tun-mode --add-route --dns-hijack --fake-ip
+   ```
+   不使用 `--dns-hijack --fake-ip` 时，经过 TUN 网卡的域名 TCP 流量可能无法匹配 aTrust 域名资源规则。
+4. 若本机同时运行其他开启了 TUN + Fake-IP 的代理工具，请务必正确配置分流规则，并谨慎开启 `auto_detect_interface`。
 
-当前轻量实现支持 Windows、macOS 和 Linux，复用系统已有的 Chrome、Edge、Chromium 或 Brave，因此不会把数百 MB 的 Chromium 内核打进每个发布包。Windows 通常可直接使用系统 Edge；其他平台找不到浏览器时可用 `browser_path` 指定可执行文件。Android/iOS 需要独立应用壳和平台 WebView，目前不在此桌面实现内。
+## 配置优先级与关键参数
 
-运行：
+配置按 **内置默认值 < TOML 配置文件 < 环境变量 < 显式命令行参数** 的顺序合并（仅显式传入的命令行参数会覆盖前者，例如 `--tun-mode=false` 可关闭配置文件中的设置；单横杠旧参数如 `-config`、`-auth-info` 仍完全兼容）。
 
-```bash
-go run . -config config.toml
-# 或
-go build -o nwafu-connect .
-./nwafu-connect -config config.toml
-```
+所有配置键均支持 `NWAFU_CONNECT_` 前缀的大写环境变量，例如：
+- `NWAFU_CONNECT_CONFIG=/path/to/config.toml`
+- `NWAFU_CONNECT_PASSWORD=...`、`NWAFU_CONNECT_TOTP_SECRET=...`
+- `NWAFU_CONNECT_SESSION_REFRESH_INTERVAL=1800`
+- `NWAFU_CONNECT_TCP_PORT_FORWARDING=127.0.0.1:9898-10.10.98.98:80`
+- `NWAFU_CONNECT_CUSTOM_DNS=library.nwafu.edu.cn:10.0.0.10`
 
-默认代理：
+常用新增与核心选项（完整列表运行 `./nwafu-connect -h`）：
 
-- SOCKS5：`127.0.0.1:1080`
-- HTTP：`127.0.0.1:1081`
-
-验证 SOCKS5：
-
-```bash
-curl --socks5-hostname 127.0.0.1:1080 https://vpn.nwafu.edu.cn/portal/
-```
-
-## 常用命令
-
-```bash
-./nwafu-connect -auth-info                 # 查询网关认证方式
-./nwafu-connect -version                   # 显示版本
-./nwafu-connect -config config.toml        # 使用 TOML 配置启动
-go test ./...                              # 单元测试
-go vet ./...                               # 静态检查
-go build .                                 # 本地构建
-```
-
-完整参数使用 `./nwafu-connect -h` 查看。关键选项包括：
-
-- `-tcp-tunnel-mode`：仅使用 aTrust TCP 隧道，不支持 UDP。
-- `-tun-mode -add-route -dns-hijack -fake-ip`：实验性系统 TUN 模式；通常需要管理员权限。
-- `-remote-dns-server auto`：使用服务端提供的 DNS；NWAFU 当前可能不下发 DNS，程序会自动回退。
-- `-client-data-file client_data.json`：保存 aTrust 会话和设备信息，减少重复登录。
-- `-debug-dump`：可能记录敏感协议数据，只用于受控调试。
-
-## 安全注意事项
-
-- `config.toml` 和 `client_data.json` 已被 `.gitignore` 忽略；仍应限制为当前用户可读，例如 `chmod 600`。
-- `client_data.json` 包含会话 Cookie 和设备标识，不应分享。
-- 建议代理只监听 `127.0.0.1`；监听 `0.0.0.0` 前必须配置访问控制。
-- 生产服务优先使用 `-config`，不要把密码直接写进命令行或 plist/systemd 参数。
-
-Docker 使用见 [`docs/docker.md`](docs/docker.md)，系统服务配置见 [`docs/service.md`](docs/service.md)。
+- `--session-refresh-interval`：aTrust 会话定时刷新间隔（秒），默认 `1800`，`0` 禁用；会话刷新会自动回写 `client_data_file` 中的最新 Cookie。
+- `--update-best-nodes-interval`：最优接入节点探测间隔（秒），默认 `300`，`0` 禁用。
+- `--secondary-dns-server`：备用 DNS，默认 `auto`（优先使用网关策略下发的第二 DNS，否则回退 `114.114.114.114`；留空则使用系统 DNS）。
+- `--local-dns-server`：用于解析 VPN 网关域名本身的底层 DNS（格式 `IP` 或 `IP:port`），适合复杂网络或防环路场景。
+- `--bind-interface` / `--auto-detect-interface`：将 VPN 底层连接绑定到指定物理网卡或自动探测网卡（与另一款 Fake-IP VPN 共存时请勿开启自动探测）。
+- `--proxy-all`：强制所有流量走 VPN 隧道。
+- `--trust-device` / `--untrust-device`：基于已保存的 `--client-data-file` 将当前设备加入或移出 aTrust 授信终端列表。
+- `--debug-pcap-file` / `--debug-tls-log-file`：分别输出底层 TCP 重建 PCAP 与 NSS TLS Key Log，用于受控 Wireshark 抓包排障（含敏感会话密钥，切勿泄露）。
 
 ## SSH / SFTP 等 TCP 客户端接入
 
-受管浏览器模式会随应用打包一个 stdio 代理助手 `nwafu-connect-proxy`，可把任意 TCP 客户端（ssh、sftp、scp、rsync 等）接入当前 aTrust 会话：
+受管浏览器与 CLI 均附带 `nwafu-connect-proxy` stdio 代理助手，可将 OpenSSH / SFTP / Git 等接入当前代理会话：
 
 ```bash
 ssh -o 'ProxyCommand="/Applications/NWAFU Connect.app/Contents/MacOS/nwafu-connect-proxy" --proxy 127.0.0.1:63665 --target %h:%p' user@10.133.16.10
 ```
 
-其中 `--proxy` 为资源门户页面显示的本地代理监听地址，`--target` 为目标校内主机与端口。Linux/Windows 用户把代理助手路径替换为安装目录中的对应可执行文件即可。
+## 嵌入式库与移动端构建
+
+- Go 宿主进程可直接导入 [`embed`](embed/embed.go) 包，通过 `embed.Prompter` 接管图形验证码与短信/TOTP 交互，在进程内拉起 gVisor 用户态隧道与本地 HTTP 代理。
+- C ABI / Flutter / Swift / Kotlin 宿主可使用 `cmd/libnwafuconnect` 与 [`scripts/build-lib.sh`](scripts/build-lib.sh)（支持 `host`、`macos`、`android`、`ios`）。
+- Android `VpnService` 宿主也可使用 `mobile` 包（`gomobile bind -target=android ./mobile`）直接将 TUN `fd` 接入 aTrust L3 隧道。
+
+## 安全与部署文档
+
+- `config.toml` 和 `client_data.json` 均已加入 `.gitignore`，请保持 `0600` 权限，切勿公开分享。
+- 生产环境建议将代理绑定在 `127.0.0.1`，并通过配置文件或环境变量传递凭据，避免出现在进程命令行参数中。
+- Docker 部署见 [`docs/docker.md`](docs/docker.md)，系统后台服务部署见 [`docs/service.md`](docs/service.md)。
+
+## 致谢
+
+- [zju-connect](https://github.com/Mythologyli/zju-connect)
+- [EasierConnect](https://github.com/lyc8503/EasierConnect)
+- [EZ4Connect](https://github.com/chenx-dust/EZ4Connect)

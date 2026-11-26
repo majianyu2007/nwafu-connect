@@ -68,3 +68,15 @@ func TestProxyStreamRejectsInvalidTarget(t *testing.T) {
 		t.Fatalf("proxyStream error = %v", err)
 	}
 }
+
+func TestReadConnectResponseBoundsUnterminatedLines(t *testing.T) {
+	oversizedStatus := strings.Repeat("A", maxConnectStatusLineBytes+128)
+	if _, _, err := readConnectResponse(bufio.NewReader(strings.NewReader(oversizedStatus))); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Fatalf("oversized status line err = %v", err)
+	}
+
+	oversizedHeader := "HTTP/1.1 200 OK\r\nX-Pad: " + strings.Repeat("B", maxConnectHeaderBytes+128)
+	if _, _, err := readConnectResponse(bufio.NewReader(strings.NewReader(oversizedHeader))); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("oversized header err = %v", err)
+	}
+}

@@ -20,6 +20,7 @@ import (
 
 	barcodeqr "github.com/boombuler/barcode/qr"
 	"github.com/liyue201/goqr"
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
 	"github.com/majianyu2007/nwafu-connect/log"
 )
 
@@ -27,8 +28,10 @@ const (
 	qyWechatQRCodeEndpoint = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect"
 	defaultQYWechatTimeout = 60 * time.Second
 )
+
 const qyWechatStatusScript = `
 const statusElement = document.getElementById("status");
+const dotElement = document.getElementById("statusDot");
 async function refreshStatus() {
 	try {
 		const response = await fetch("/status", { cache: "no-store" });
@@ -38,12 +41,18 @@ async function refreshStatus() {
 		const status = await response.json();
 		statusElement.textContent = status.message;
 		statusElement.dataset.state = status.state;
+		if (dotElement) {
+			dotElement.dataset.state = status.state;
+		}
 		if (status.state !== "success" && status.state !== "error") {
 			window.setTimeout(refreshStatus, 500);
 		}
 	} catch {
 		statusElement.textContent = "无法读取认证状态，请查看终端日志。";
 		statusElement.dataset.state = "error";
+		if (dotElement) {
+			dotElement.dataset.state = "error";
+		}
 	}
 }
 refreshStatus();
@@ -55,28 +64,178 @@ var (
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NWAFU Connect 企业微信登录</title>
+<title>NWAFU Connect · 企业微信登录</title>
 <style>
+:root {
+  color-scheme: light;
+  --primary: #0066cc;
+  --ink: #1d1d1f;
+  --ink-muted-80: #333333;
+  --ink-muted-48: #7a7a7a;
+  --divider-soft: #f0f0f0;
+  --hairline: #e0e0e0;
+  --canvas: #ffffff;
+  --parchment: #f5f5f7;
+  --black: #000000;
+}
 * { box-sizing: border-box; }
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 html, body { margin: 0; min-height: 100%; }
-body { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f5f7fa; color: #1f2329; font: 16px system-ui, sans-serif; }
-main { width: min(460px, 100%); display: flex; flex-direction: column; align-items: center; padding: 32px 24px; text-align: center; background: white; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.08); }
-h1 { margin: 0 0 12px; }
-.instructions { margin: 0 0 24px; }
-img { display: block; width: min(360px, 100%); height: auto; margin: 0 auto 20px; image-rendering: pixelated; }
-#status { min-height: 24px; margin: 0; font-weight: 600; }
-#status[data-state="processing"] { color: #245bdb; }
-#status[data-state="success"] { color: #16803c; }
-#status[data-state="error"] { color: #c62828; }
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--parchment);
+  color: var(--ink);
+  font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.47;
+  letter-spacing: -0.374px;
+}
+.global-nav {
+  height: 44px;
+  background: var(--black);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+}
+.global-nav-inner {
+  width: min(980px, 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: -0.12px;
+}
+.global-nav-brand { font-weight: 600; color: #ffffff; }
+.global-nav-meta { color: #cccccc; }
+.stage {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 48px 24px;
+}
+main {
+  width: min(460px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 36px 32px 32px;
+  text-align: center;
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 18px;
+}
+.eyebrow {
+  margin-bottom: 8px;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.29;
+  letter-spacing: -0.12px;
+}
+h1 {
+  margin: 0 0 10px;
+  font-family: "SF Pro Display", -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.14;
+  letter-spacing: -0.28px;
+  color: var(--ink);
+}
+.instructions {
+  margin: 0 0 28px;
+  color: var(--ink-muted-48);
+  font-size: 17px;
+  line-height: 1.47;
+  letter-spacing: -0.374px;
+}
+.qr-frame {
+  padding: 20px;
+  margin-bottom: 24px;
+  background: var(--parchment);
+  border: 1px solid var(--divider-soft);
+  border-radius: 18px;
+}
+.qr-frame img {
+  display: block;
+  width: min(260px, 100%);
+  height: auto;
+  border-radius: 8px;
+  background: var(--canvas);
+  image-rendering: pixelated;
+}
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px 18px;
+  border-radius: 9999px;
+  background: var(--parchment);
+  border: 1px solid var(--hairline);
+}
+#statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--ink-muted-48);
+  flex: 0 0 auto;
+}
+#statusDot[data-state="processing"] { background: var(--primary); }
+#statusDot[data-state="success"] { background: var(--primary); }
+#statusDot[data-state="error"] { background: var(--ink); }
+#status {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.29;
+  letter-spacing: -0.224px;
+  color: var(--ink);
+}
+#status[data-state="processing"] { color: var(--primary); }
+#status[data-state="success"] { color: var(--primary); }
+#status[data-state="error"] { color: var(--ink); }
+.note {
+  margin: 22px 0 0;
+  color: var(--ink-muted-48);
+  font-size: 12px;
+  line-height: 1.4;
+  letter-spacing: -0.12px;
+}
+@media (max-width: 480px) {
+  .stage { padding: 24px 16px; }
+  main { padding: 28px 20px; }
+  h1 { font-size: 24px; }
+}
 </style>
 </head>
 <body>
+<header class="global-nav">
+  <div class="global-nav-inner">
+    <span class="global-nav-brand">NWAFU Connect</span>
+    <span class="global-nav-meta">企业微信扫码</span>
+  </div>
+</header>
+<div class="stage">
 <main>
-<h1>企业微信扫码登录</h1>
-<p class="instructions">请使用企业微信扫描二维码并确认登录。</p>
-<img src="/qrcode.png" alt="企业微信登录二维码">
-<p id="status" role="status" aria-live="polite">等待扫码…</p>
+  <div class="eyebrow">aTrust 身份认证</div>
+  <h1>企业微信扫码登录</h1>
+  <p class="instructions">请打开企业微信扫描下方二维码并确认授权。</p>
+  <div class="qr-frame">
+    <img src="/qrcode.png" alt="企业微信登录二维码">
+  </div>
+  <div class="status-pill">
+    <span id="statusDot" data-state="waiting" aria-hidden="true"></span>
+    <p id="status" role="status" aria-live="polite" data-state="waiting">等待扫码…</p>
+  </div>
+  <p class="note">此页面仅在本机临时开放，认证完成后可关闭。</p>
 </main>
+</div>
 <script src="/status.js"></script>
 </body>
 </html>`))
@@ -123,10 +282,11 @@ type qyWechatPageStatus struct {
 }
 
 type qyWechatPageServer struct {
-	address string
-	server  *http.Server
-	mu      sync.RWMutex
-	status  qyWechatPageStatus
+	address    string
+	server     *http.Server
+	mu         sync.RWMutex
+	status     qyWechatPageStatus
+	closeTimer *time.Timer
 }
 
 func (s *Session) loginAuthQYWechat(authInfo AuthInfo, method QYWechatLogin) error {
@@ -139,10 +299,18 @@ func (s *Session) loginAuthQYWechat(authInfo AuthInfo, method QYWechatLogin) err
 	if timeout <= 0 {
 		timeout = defaultQYWechatTimeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	parentCtx := s.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
-	scan, err := newQYWechatScanSession(ctx, qrURL, authInfo.QYWechatQrcodeConf)
+	var transport http.RoundTripper
+	if s.client != nil {
+		transport = s.client.Transport
+	}
+	scan, err := newQYWechatScanSessionWithTransport(ctx, qrURL, authInfo.QYWechatQrcodeConf, transport)
 	if err != nil {
 		return err
 	}
@@ -172,7 +340,7 @@ func (s *Session) loginAuthQYWechat(authInfo AuthInfo, method QYWechatLogin) err
 		}
 		defer page.closeAfter(5 * time.Second)
 		log.Printf("Open %s to scan the enterprise WeChat QR code", page.address)
-		openBrowser(page.address)
+		authchallenge.OpenBrowser(page.address, nil)
 	}
 	setPageStatus := func(state, message string) {
 		if page != nil {
@@ -182,7 +350,12 @@ func (s *Session) loginAuthQYWechat(authInfo AuthInfo, method QYWechatLogin) err
 	failPage := func(message string, failure error) error {
 		setPageStatus("error", message)
 		if page != nil {
-			time.Sleep(time.Second)
+			waitTimer := time.NewTimer(time.Second)
+			select {
+			case <-waitTimer.C:
+			case <-ctx.Done():
+				waitTimer.Stop()
+			}
 		}
 		return failure
 	}
@@ -244,12 +417,16 @@ func (s *Session) qyWechatQRCodeURL(authInfo AuthInfo, loginDomain string) (stri
 }
 
 func newQYWechatScanSession(ctx context.Context, qrURL string, conf QYWechatQrcodeConfig) (*qyWechatScanSession, error) {
-	client := &http.Client{Timeout: 65 * time.Second}
+	return newQYWechatScanSessionWithTransport(ctx, qrURL, conf, nil)
+}
+
+func newQYWechatScanSessionWithTransport(ctx context.Context, qrURL string, conf QYWechatQrcodeConfig, transport http.RoundTripper) (*qyWechatScanSession, error) {
+	httpClient := &http.Client{Timeout: 65 * time.Second, Transport: transport}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, qrURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("load enterprise WeChat QR code session: %w", err)
 	}
@@ -267,12 +444,12 @@ func newQYWechatScanSession(ctx context.Context, qrURL string, conf QYWechatQrco
 	}
 	origin := &url.URL{Scheme: response.Request.URL.Scheme, Host: response.Request.URL.Host}
 	imageURL := origin.ResolveReference(&url.URL{Path: "/wwopen/sso/qrImg", RawQuery: url.Values{"key": {string(match[1])}}.Encode()})
-	imageData, err := fetchQYWechatQRCodeImage(ctx, client, imageURL)
+	imageData, err := fetchQYWechatQRCodeImage(ctx, httpClient, imageURL)
 	if err != nil {
 		return nil, err
 	}
 	return &qyWechatScanSession{
-		client:      client,
+		client:      httpClient,
 		origin:      origin,
 		key:         string(match[1]),
 		appID:       conf.AppID,
@@ -282,12 +459,12 @@ func newQYWechatScanSession(ctx context.Context, qrURL string, conf QYWechatQrco
 	}, nil
 }
 
-func fetchQYWechatQRCodeImage(ctx context.Context, client *http.Client, imageURL *url.URL) ([]byte, error) {
+func fetchQYWechatQRCodeImage(ctx context.Context, httpClient *http.Client, imageURL *url.URL) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("download enterprise WeChat QR code: %w", err)
 	}
@@ -350,10 +527,12 @@ func (s *qyWechatScanSession) waitForCallback(ctx context.Context, notify func(s
 		default:
 			return nil, fmt.Errorf("unknown enterprise WeChat QR code status: %s", result.Status)
 		}
+		timer := time.NewTimer(2 * time.Second)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return nil, fmt.Errorf("enterprise WeChat QR code timed out: %w", ctx.Err())
-		case <-time.After(2 * time.Second):
+		case <-timer.C:
 		}
 	}
 }
@@ -401,6 +580,17 @@ func (s *qyWechatScanSession) poll(ctx context.Context, status string) (qyWechat
 	return result, nil
 }
 
+func setQYWechatPageHeaders(header http.Header) {
+	header.Set("Cache-Control", "no-store, max-age=0")
+	header.Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'self'")
+	header.Set("Cross-Origin-Opener-Policy", "same-origin")
+	header.Set("Cross-Origin-Resource-Policy", "same-origin")
+	header.Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), usb=()")
+	header.Set("Referrer-Policy", "no-referrer")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("X-Frame-Options", "DENY")
+}
+
 func serveQYWechatPage(imageData []byte) (*qyWechatPageServer, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -412,7 +602,13 @@ func serveQYWechatPage(imageData []byte) (*qyWechatPageServer, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		setQYWechatPageHeaders(w.Header())
+		if !authchallenge.IsLoopbackRequestHost(r.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -421,40 +617,52 @@ func serveQYWechatPage(imageData []byte) (*qyWechatPageServer, error) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if err := qyWechatPage.Execute(w, nil); err != nil {
 			log.Printf("Render enterprise WeChat page failed: %v", err)
 		}
 	})
 	mux.HandleFunc("/qrcode.png", func(w http.ResponseWriter, r *http.Request) {
+		setQYWechatPageHeaders(w.Header())
+		if !authchallenge.IsLoopbackRequestHost(r.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(imageData)
 	})
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		setQYWechatPageHeaders(w.Header())
+		if !authchallenge.IsLoopbackRequestHost(r.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
 		if err := json.NewEncoder(w).Encode(page.getStatus()); err != nil {
 			log.Printf("Render enterprise WeChat status failed: %v", err)
 		}
 	})
 	mux.HandleFunc("/status.js", func(w http.ResponseWriter, r *http.Request) {
+		setQYWechatPageHeaders(w.Header())
+		if !authchallenge.IsLoopbackRequestHost(r.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
 		_, _ = io.WriteString(w, qyWechatStatusScript)
 	})
 	page.server = &http.Server{
@@ -484,6 +692,13 @@ func (s *qyWechatPageServer) getStatus() qyWechatPageStatus {
 }
 
 func (s *qyWechatPageServer) close() {
+	s.mu.Lock()
+	if s.closeTimer != nil {
+		s.closeTimer.Stop()
+		s.closeTimer = nil
+	}
+	s.mu.Unlock()
+
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := s.server.Shutdown(shutdownContext); err != nil {
@@ -492,7 +707,12 @@ func (s *qyWechatPageServer) close() {
 }
 
 func (s *qyWechatPageServer) closeAfter(delay time.Duration) {
-	time.AfterFunc(delay, s.close)
+	s.mu.Lock()
+	if s.closeTimer != nil {
+		s.closeTimer.Stop()
+	}
+	s.closeTimer = time.AfterFunc(delay, s.close)
+	s.mu.Unlock()
 }
 
 func saveQYWechatQRCode(path string, imageData []byte) error {
@@ -620,18 +840,19 @@ func (s *Session) qyWechat(callback string) error {
 	request.Header.Set("x-sdp-rid", s.rid)
 	request.Header.Set("x-sdp-traceid", s.randSdpId())
 
-	previousCheckRedirect := s.client.CheckRedirect
-	s.client.CheckRedirect = func(*http.Request, []*http.Request) error {
+	noRedirectClient := *s.client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	defer func() { s.client.CheckRedirect = previousCheckRedirect }()
-
-	response, err := s.client.Do(request)
+	origClient := s.client
+	s.client = &noRedirectClient
+	response, err := s.request(request)
+	s.client = origClient
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	log.DebugPrintf("Received enterprise WeChat callback data: %s", string(body))
 	if response.StatusCode != http.StatusFound {
 		return fmt.Errorf("enterprise WeChat callback returned status %d", response.StatusCode)

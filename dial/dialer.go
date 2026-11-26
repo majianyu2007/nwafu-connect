@@ -1,6 +1,8 @@
 package dial
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -11,11 +13,6 @@ import (
 	"github.com/majianyu2007/nwafu-connect/log"
 	"github.com/majianyu2007/nwafu-connect/resolve"
 	"github.com/majianyu2007/nwafu-connect/stack"
-)
-
-import (
-	"context"
-	"errors"
 )
 
 // ErrACLDenied is returned when a caller forces VPN routing for a destination
@@ -33,7 +30,7 @@ type Dialer struct {
 	resourceIndex        *ipresource.Index
 	alwaysUseVPN         bool
 	dialDirectHTTPProxy  string // format: "ip:port"
-	dialDirectSocksProxy string // WORKING IN PROCESS
+	dialDirectSocksProxy string // format: "ip:port"
 }
 
 // dialDirectIP need have a `hostAddr` parameter, which will be passed to PROXY. But `hostAddr` maybe empty, ipAddr never be empty.
@@ -49,12 +46,10 @@ func (d *Dialer) dialDirectIP(ctx context.Context, network, ipAddr string, hostA
 	} else if d.dialDirectSocksProxy != "" && network == "tcp" {
 		if hostAddr != "" {
 			return d.dialDirectWithSocksProxy(ctx, network, hostAddr, false)
-		} else {
-			return d.dialDirectWithSocksProxy(ctx, network, ipAddr, true)
 		}
-	} else {
-		return d.dialDirectWithoutProxy(ctx, network, ipAddr)
+		return d.dialDirectWithSocksProxy(ctx, network, ipAddr, true)
 	}
+	return d.dialDirectWithoutProxy(ctx, network, ipAddr)
 }
 
 func (d *Dialer) dialDirectHost(ctx context.Context, network, hostAddr string) (net.Conn, error) {
@@ -64,9 +59,8 @@ func (d *Dialer) dialDirectHost(ctx context.Context, network, hostAddr string) (
 		// only support tcp for socks proxy
 	} else if d.dialDirectSocksProxy != "" && network == "tcp" {
 		return d.dialDirectWithSocksProxy(ctx, network, hostAddr, false)
-	} else {
-		return d.dialDirectWithoutProxy(ctx, network, hostAddr)
 	}
+	return d.dialDirectWithoutProxy(ctx, network, hostAddr)
 }
 
 func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Conn, error) {
@@ -104,12 +98,24 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 
 	matchedResource := false
 	if res := ctx.Value(resolve.ContextKeyDomainResource); res != nil {
-		if resources, ok := res.(client.DomainResourceSet); ok {
-			_, matchedResource = resources.Match(port, resourceNetwork)
+		var resource client.DomainResource
+		var matched bool
+		switch resources := res.(type) {
+		case []client.DomainResource:
+			resource, matched = matchDomainResourceForTunnel(resources, resourceNetwork, port)
+		case client.DomainResource:
+			resource, matched = matchDomainResourceForTunnel([]client.DomainResource{resources}, resourceNetwork, port)
+		}
+		if matched {
+			ctx = context.WithValue(ctx, resolve.ContextKeyDomainResource, resource)
+			matchedResource = true
 		}
 	}
 	if !matchedResource {
-		_, matchedResource = d.resourceIndex.Match(ip, resourceNetwork, port)
+		if resource, matched := matchIPResourceForTunnel(d.resourceIndex, ip, resourceNetwork, port); matched {
+			ctx = context.WithValue(ctx, resolve.ContextKeyIPResource, resource)
+			matchedResource = true
+		}
 	}
 
 	if d.alwaysUseVPN && !matchedResource {
@@ -134,6 +140,28 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 		log.Printf("VPN does not support %s; using direct connection for %s", network, ipAddr)
 		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 	}
+}
+
+func matchDomainResourceForTunnel(resources []client.DomainResource, network string, port int) (client.DomainResource, bool) {
+	if network == "tcp" {
+		if resource, ok := client.MatchDomainResourceWhere(resources, network, port, func(resource client.DomainResource) bool {
+			return !resource.EnableTCPPrefL3
+		}); ok {
+			return resource, true
+		}
+	}
+	return client.MatchDomainResource(resources, network, port)
+}
+
+func matchIPResourceForTunnel(index *ipresource.Index, ip net.IP, network string, port int) (client.IPResource, bool) {
+	if network == "tcp" {
+		if resource, ok := index.MatchWhere(ip, network, port, func(resource client.IPResource) bool {
+			return !resource.EnableTCPPrefL3
+		}); ok {
+			return resource, true
+		}
+	}
+	return index.Match(ip, network, port)
 }
 
 func (d *Dialer) Dial(ctx context.Context, network string, addr string) (net.Conn, error) {

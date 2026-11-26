@@ -5,7 +5,10 @@
 #define OutputDir "dist"
 #endif
 #ifndef Version
-#define Version "1.4.1"
+#define Version "1.5.0"
+#endif
+#ifndef Arch
+#define Arch "amd64"
 #endif
 
 [Setup]
@@ -17,10 +20,15 @@ DefaultDirName={localappdata}\Programs\NWAFU Connect
 DefaultGroupName=NWAFU Connect
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+#if Arch == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+#else
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+#endif
 OutputDir={#OutputDir}
-OutputBaseFilename=NWAFU-Connect-{#Version}-windows-amd64-setup
+OutputBaseFilename=NWAFU-Connect-{#Version}-windows-{#Arch}-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -32,6 +40,7 @@ Source: "{#SourceDir}\nwafu-connect-desktop.exe"; DestDir: "{app}"; Flags: ignor
 Source: "{#SourceDir}\nwafu-connect.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\nwafu-connect-proxy.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\config.toml.example"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\NWAFU Connect"; Filename: "{app}\nwafu-connect-desktop.exe"; IconFilename: "{app}\icon.ico"

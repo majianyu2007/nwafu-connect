@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	maxConnectStatusLineBytes = 4096
+	maxConnectHeaderBytes     = 64 * 1024
 )
 
 func main() {
@@ -76,13 +82,27 @@ func proxyStream(proxyAddress, targetAddress string, input io.Reader, output io.
 	return nil
 }
 
+func readBoundedLine(reader *bufio.Reader, maxBytes int, tooLongErr error) (string, error) {
+	var builder strings.Builder
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if builder.Len()+len(fragment) > maxBytes {
+			return "", tooLongErr
+		}
+		builder.Write(fragment)
+		if err == nil {
+			return builder.String(), nil
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return "", err
+		}
+	}
+}
+
 func readConnectResponse(reader *bufio.Reader) (string, int, error) {
-	statusLine, err := reader.ReadString('\n')
+	statusLine, err := readBoundedLine(reader, maxConnectStatusLineBytes, errors.New("proxy status line is too long"))
 	if err != nil {
 		return "", 0, err
-	}
-	if len(statusLine) > 4096 {
-		return "", 0, fmt.Errorf("proxy status line is too long")
 	}
 	status := strings.TrimRight(statusLine, "\r\n")
 	parts := strings.Fields(status)
@@ -95,14 +115,12 @@ func readConnectResponse(reader *bufio.Reader) (string, int, error) {
 	}
 	headerBytes := 0
 	for {
-		line, err := reader.ReadString('\n')
+		remaining := maxConnectHeaderBytes - headerBytes
+		line, err := readBoundedLine(reader, remaining, errors.New("proxy response headers are too large"))
 		if err != nil {
 			return "", 0, err
 		}
 		headerBytes += len(line)
-		if headerBytes > 64*1024 {
-			return "", 0, fmt.Errorf("proxy response headers are too large")
-		}
 		if strings.TrimRight(line, "\r\n") == "" {
 			return status, statusCode, nil
 		}

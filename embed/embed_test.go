@@ -2,17 +2,21 @@ package embed
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
 func TestConfigDefaults(t *testing.T) {
 	c := Config{}.withDefaults()
 	if c.Server != DefaultServer || c.Port != 443 || c.HTTPBind != "127.0.0.1:0" ||
-		c.LoginDomain != "LDAP" || c.RemoteDNSServer != "auto" || c.DNSTTL != 3600 ||
-		c.UpdateBestNodesInterval != 300 {
+		c.LoginDomain != "LDAP" || c.RemoteDNSServer != "auto" || c.SecondaryDNSServer != "auto" ||
+		c.DNSTTL != 3600 || c.UpdateBestNodesInterval != 300 || c.SessionRefreshInterval != 1800 {
 		t.Fatalf("defaults = %+v", c)
 	}
 }
@@ -28,6 +32,7 @@ func TestValidate(t *testing.T) {
 		{Username: "u", Password: "p", Port: -1},
 		{Username: "u", Password: "p", HTTPBind: "localhost"},
 		{Username: "u", Password: "p", UpdateBestNodesInterval: -5},
+		{Username: "u", Password: "p", SessionRefreshInterval: -1},
 	}
 	for _, c := range bad {
 		if err := c.Validate(); err == nil {
@@ -62,12 +67,30 @@ func TestWritePrivateFile(t *testing.T) {
 	if err := writePrivateFile(path, []byte(`{"a":1}`)); err != nil {
 		t.Fatal(err)
 	}
+	if err := writePrivateFile(path, []byte(`{"a":2}`)); err != nil {
+		t.Fatal(err)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v", info.Mode().Perm())
+	}
+}
+
+func TestIsUnreachableNetworkError(t *testing.T) {
+	if !isUnreachableNetworkError(fmt.Errorf("dial: %w", syscall.ECONNREFUSED)) {
+		t.Fatal("expected ECONNREFUSED to be classified as unreachable")
+	}
+	if !isUnreachableNetworkError(&net.DNSError{Name: "vpn.nwafu.edu.cn", IsNotFound: true}) {
+		t.Fatal("expected DNSError to be classified as unreachable")
+	}
+	if !isUnreachableNetworkError(context.DeadlineExceeded) {
+		t.Fatal("expected DeadlineExceeded to be classified as unreachable")
+	}
+	if isUnreachableNetworkError(errors.New("invalid password")) {
+		t.Fatal("unexpected unreachable classification for auth error")
 	}
 }
 

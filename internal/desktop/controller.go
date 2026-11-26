@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -20,8 +19,10 @@ import (
 )
 
 type Status struct {
-	Connected bool
-	Message   string
+	Connected    bool
+	Message      string
+	ProxyAddress string
+	StartURL     string
 }
 
 type Controller struct {
@@ -33,6 +34,8 @@ type Controller struct {
 	mutex          sync.Mutex
 	command        *exec.Cmd
 	commandDone    chan struct{}
+	genCtx         context.Context
+	genCancel      context.CancelFunc
 	generation     uint64
 	desiredRunning bool
 	closed         bool
@@ -82,14 +85,37 @@ func (c *Controller) Start() error {
 	return nil
 }
 
+// Disconnect stops the active tunnel without closing the tray controller.
+func (c *Controller) Disconnect() error {
+	c.mutex.Lock()
+	if c.closed {
+		c.mutex.Unlock()
+		return nil
+	}
+	c.desiredRunning = false
+	command, done, genCancel := c.detachLocked()
+	c.mutex.Unlock()
+	c.finishStop(command, done, genCancel)
+	return nil
+}
+
 func (c *Controller) Restart() error {
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
 	if c.closed {
+		c.mutex.Unlock()
 		return errors.New("桌面控制器已停止")
 	}
 	c.desiredRunning = true
-	c.stopLocked()
+	command, done, genCancel := c.detachLocked()
+	c.mutex.Unlock()
+
+	c.finishStop(command, done, genCancel)
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.closed || !c.desiredRunning {
+		return nil
+	}
 	if err := c.startLocked(); err != nil {
 		c.desiredRunning = false
 		return err
@@ -106,10 +132,13 @@ func (c *Controller) Stop() error {
 	}
 	c.closed = true
 	c.desiredRunning = false
-	c.stopLocked()
+	command, done, genCancel := c.detachLocked()
 	logFile := c.logFile
 	c.logFile = nil
 	c.mutex.Unlock()
+
+	c.finishStop(command, done, genCancel)
+
 	if logFile != nil {
 		if err := logFile.Close(); err != nil {
 			return fmt.Errorf("close desktop log: %w", err)
@@ -121,6 +150,10 @@ func (c *Controller) Stop() error {
 func (c *Controller) OpenBrowser() error {
 	c.mutex.Lock()
 	running := !c.closed && c.command != nil
+	browserCtx := c.genCtx
+	if browserCtx == nil {
+		browserCtx = c.ctx
+	}
 	c.mutex.Unlock()
 	if !running {
 		return errors.New("连接尚未启动")
@@ -129,7 +162,7 @@ func (c *Controller) OpenBrowser() error {
 	if err != nil {
 		return fmt.Errorf("连接尚未就绪，请稍后重试: %w", err)
 	}
-	process, err := managedbrowser.Start(c.ctx, managedbrowser.Options{
+	process, err := managedbrowser.Start(browserCtx, managedbrowser.Options{
 		Executable: state.Executable, ProxyAddress: state.ProxyAddress, StartURL: state.StartURL, ProfileDir: state.ProfileDir,
 	})
 	if err != nil {
@@ -171,8 +204,10 @@ func (c *Controller) startLocked() error {
 		"--browser-state-file", c.paths.BrowserState,
 	}
 	command := exec.Command(c.corePath, arguments...)
-	command.Stdout = io.MultiWriter(c.logFile)
-	command.Stderr = io.MultiWriter(c.logFile)
+	if c.logFile != nil {
+		command.Stdout = c.logFile
+		command.Stderr = c.logFile
+	}
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("启动 NWAFU Connect 后台连接: %w", err)
 	}
@@ -181,28 +216,41 @@ func (c *Controller) startLocked() error {
 	c.command = command
 	done := make(chan struct{})
 	c.commandDone = done
+	c.genCtx, c.genCancel = context.WithCancel(c.ctx)
 	c.publish(Status{Message: "正在连接学校网关…"})
 	go c.waitForCommand(command, generation, done)
 	go c.waitForReady(generation)
 	return nil
 }
 
-func (c *Controller) stopLocked() {
-	if c.command == nil {
-		_ = managedbrowser.RemoveState(c.paths.BrowserState)
-		c.publish(Status{Message: "连接已停止"})
-		return
-	}
+func (c *Controller) detachLocked() (*exec.Cmd, chan struct{}, context.CancelFunc) {
 	command := c.command
 	done := c.commandDone
+	genCancel := c.genCancel
 	c.command = nil
 	c.commandDone = nil
-	c.generation++
-	if command.Process != nil {
+	c.genCtx = nil
+	c.genCancel = nil
+	if command != nil {
+		c.generation++
+	}
+	return command, done, genCancel
+}
+
+func (c *Controller) finishStop(command *exec.Cmd, done chan struct{}, genCancel context.CancelFunc) {
+	if genCancel != nil {
+		genCancel()
+	}
+	if command != nil && command.Process != nil {
 		terminateProcess(command, done)
 	}
 	_ = managedbrowser.RemoveState(c.paths.BrowserState)
 	c.publish(Status{Message: "连接已停止"})
+}
+
+func (c *Controller) stopLocked() {
+	command, done, genCancel := c.detachLocked()
+	c.finishStop(command, done, genCancel)
 }
 
 func (c *Controller) waitForCommand(command *exec.Cmd, generation uint64, done chan struct{}) {
@@ -213,11 +261,21 @@ func (c *Controller) waitForCommand(command *exec.Cmd, generation uint64, done c
 		c.mutex.Unlock()
 		return
 	}
+	genCancel := c.genCancel
 	c.command = nil
 	c.commandDone = nil
+	c.genCtx = nil
+	c.genCancel = nil
 	_ = managedbrowser.RemoveState(c.paths.BrowserState)
 	c.mutex.Unlock()
+	if genCancel != nil {
+		genCancel()
+	}
 	if err != nil {
+		if !c.gatewayReachable() {
+			c.publish(Status{Message: "网关不可达（校园网内无需连接 VPN）"})
+			return
+		}
 		c.publish(Status{Message: "连接已中断，可从托盘重新连接"})
 	} else {
 		c.publish(Status{Message: "连接已结束"})
@@ -227,20 +285,24 @@ func (c *Controller) waitForCommand(command *exec.Cmd, generation uint64, done c
 func (c *Controller) waitForReady(generation uint64) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.NewTimer(45 * time.Second)
-	defer timeout.Stop()
+	slowTimer := time.NewTimer(45 * time.Second)
+	defer slowTimer.Stop()
+	slowHintSent := false
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-timeout.C:
+		case <-slowTimer.C:
+			if slowHintSent {
+				continue
+			}
+			slowHintSent = true
 			c.mutex.Lock()
 			current := c.generation == generation && c.command != nil
 			c.mutex.Unlock()
 			if current {
-				c.publish(Status{Message: "连接耗时较长，请检查日志或认证信息"})
+				c.publish(Status{Message: "等待认证完成或网关响应…（可查看日志）"})
 			}
-			return
 		case <-ticker.C:
 			c.mutex.Lock()
 			current := c.generation == generation && c.command != nil
@@ -248,14 +310,20 @@ func (c *Controller) waitForReady(generation uint64) {
 			if !current {
 				return
 			}
-			if _, err := managedbrowser.ReadState(c.paths.BrowserState); err != nil {
+			state, err := managedbrowser.ReadState(c.paths.BrowserState)
+			if err != nil {
 				continue
 			}
 			c.mutex.Lock()
 			current = c.generation == generation && c.command != nil
 			c.mutex.Unlock()
 			if current {
-				c.publish(Status{Connected: true, Message: "已连接 · 受管浏览器可用"})
+				c.publish(Status{
+					Connected:    true,
+					Message:      "已连接 · 受管浏览器可用",
+					ProxyAddress: state.ProxyAddress,
+					StartURL:     state.StartURL,
+				})
 			}
 			return
 		}
@@ -285,6 +353,9 @@ func (c *Controller) monitorWakeAndNetwork() {
 			if c.ctx.Err() != nil {
 				return
 			}
+			if !online && wasOnline {
+				c.publish(Status{Message: "网关不可达（校园网内无需连接 VPN）"})
+			}
 			if shouldReconnect(desiredRunning, elapsed, wasOnline, online) {
 				_ = c.Restart()
 			}
@@ -294,7 +365,7 @@ func (c *Controller) monitorWakeAndNetwork() {
 }
 
 func shouldReconnect(desiredRunning bool, elapsed time.Duration, wasOnline, online bool) bool {
-	return desiredRunning && (elapsed > 45*time.Second || (!wasOnline && online))
+	return desiredRunning && online && (elapsed > 45*time.Second || !wasOnline)
 }
 
 func (c *Controller) gatewayReachable() bool {
@@ -303,7 +374,8 @@ func (c *Controller) gatewayReachable() bool {
 		return false
 	}
 	address := net.JoinHostPort(stringValue(configuration.ServerAddress, "vpn.nwafu.edu.cn"), fmt.Sprint(intValue(configuration.ServerPort, 443)))
-	connection, err := net.DialTimeout("tcp", address, 4*time.Second)
+	dialer := net.Dialer{Timeout: 4 * time.Second}
+	connection, err := dialer.DialContext(c.ctx, "tcp", address)
 	if err != nil {
 		return false
 	}

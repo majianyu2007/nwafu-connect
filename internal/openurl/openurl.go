@@ -26,5 +26,6 @@ func Open(rawURL string) error {
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("open URL: %w", err)
 	}
+	go func() { _ = command.Wait() }()
 	return nil
 }

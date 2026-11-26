@@ -23,20 +23,23 @@ func (s *Session) QueryDevice() (*QueryDeviceResult, error) {
 	params := WithSharedParams(url.Values{
 		"status": {"trust"}, // can be "trust" or "untrust" but no need
 	})
-	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Content-Type", "application/json;charset=utf-8")
-	req.Header.Set("x-csrf-token", s.csrfToken)
-	req.Header.Set("x-sdp-traceid", s.randSdpId())
+	req, err := http.NewRequest("GET", u+"?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	s.setAuthJSONHeaders(req)
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "queryDevice", 8<<20)
+	if err != nil {
+		return nil, err
+	}
 	log.DebugPrintf("Received query device: %s", string(body))
 
 	var re struct {
@@ -71,21 +74,27 @@ func (s *Session) TrustDevice(idList []string) error {
 	payload := map[string]interface{}{
 		"idList": idList,
 	}
-	bdy, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(bdy))
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Content-Type", "application/json;charset=utf-8")
-	req.Header.Set("x-csrf-token", s.csrfToken)
-	req.Header.Set("x-sdp-traceid", s.randSdpId())
+	bdy, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(bdy))
+	if err != nil {
+		return err
+	}
+	s.setAuthJSONHeaders(req)
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "trustDevice", 8<<20)
+	if err != nil {
+		return err
+	}
 	log.DebugPrintf("Received trust device: %s", string(body))
 
 	var re struct {
@@ -113,21 +122,27 @@ func (s *Session) UntrustDevice(idList []string) error {
 	payload := map[string]interface{}{
 		"idList": idList,
 	}
-	bdy, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(bdy))
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Content-Type", "application/json;charset=utf-8")
-	req.Header.Set("x-csrf-token", s.csrfToken)
-	req.Header.Set("x-sdp-traceid", s.randSdpId())
+	bdy, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(bdy))
+	if err != nil {
+		return err
+	}
+	s.setAuthJSONHeaders(req)
 
-	resp, err := s.client.Do(req)
+	resp, err := s.request(req)
 	if err != nil {
 		return err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuthHTTPResponse(resp, "untrustDevice", 8<<20)
+	if err != nil {
+		return err
+	}
 	log.DebugPrintf("Received untrust device: %s", string(body))
 
 	var re struct {

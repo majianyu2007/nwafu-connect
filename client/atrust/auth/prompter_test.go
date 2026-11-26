@@ -1,6 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/majianyu2007/nwafu-connect/client/authchallenge"
+)
 
 type recordingPrompter struct{ kind string }
 
@@ -10,11 +14,19 @@ func (p *recordingPrompter) VerificationCode(kind, _, _ string, _ bool) (string,
 	return "  123456 ", nil
 }
 
-func TestReadVerificationCodeUsesPrompter(t *testing.T) {
+func TestPrompterAdaptsToChallengeHandler(t *testing.T) {
 	p := &recordingPrompter{}
-	s := &Session{prompter: p}
-	code, err := s.readVerificationCode("sms", "t", "h", true)
-	if err != nil || code != "123456" || p.kind != "sms" {
-		t.Fatalf("code=%q err=%v kind=%q", code, err, p.kind)
+	h := newPrompterChallengeHandler(p)
+	resp, err := h.HandleCodeChallenge(authchallenge.CodeChallenge{
+		Kind:                 authchallenge.CodeSMS,
+		Message:              "h",
+		CanSkipSecondaryAuth: true,
+	})
+	if err != nil || resp.Code != "123456" || p.kind != "sms" {
+		t.Fatalf("resp=%+v err=%v kind=%q", resp, err, p.kind)
+	}
+	captcha, err := h.HandleClickCaptcha(authchallenge.ClickCaptchaChallenge{Image: []byte("img")})
+	if err != nil || len(captcha.Points) != 1 || captcha.Points[0].X != 1 || captcha.Points[0].Y != 2 {
+		t.Fatalf("captcha=%+v err=%v", captcha, err)
 	}
 }

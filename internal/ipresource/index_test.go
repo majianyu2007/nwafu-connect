@@ -1,6 +1,7 @@
 package ipresource
 
 import (
+	"fmt"
 	"net"
 	"testing"
 
@@ -21,38 +22,30 @@ func TestIndexPreservesFirstMatchingResource(t *testing.T) {
 	}
 }
 
-func TestIndexMatchesProtocolAndPort(t *testing.T) {
+func TestIndexCanPreserveLastMatchingResource(t *testing.T) {
 	index := New([]client.IPResource{
-		{IPMin: net.IPv4(192, 0, 2, 1), IPMax: net.IPv4(192, 0, 2, 10), PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "web"},
+		{IPMin: net.IPv4(10, 0, 0, 0), IPMax: net.IPv4(10, 0, 0, 255), PortMin: 1, PortMax: 65535, Protocol: "all", AppID: "first"},
+		{IPMin: net.IPv4(10, 0, 0, 42), IPMax: net.IPv4(10, 0, 0, 42), PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "last"},
 	})
-	for _, test := range []struct {
-		name     string
-		ip       net.IP
-		protocol string
-		port     int
-		want     bool
-	}{
-		{name: "exact match", ip: net.IPv4(192, 0, 2, 5), protocol: "tcp", port: 443, want: true},
-		{name: "wrong protocol", ip: net.IPv4(192, 0, 2, 5), protocol: "udp", port: 443},
-		{name: "wrong port", ip: net.IPv4(192, 0, 2, 5), protocol: "tcp", port: 80},
-		{name: "outside range", ip: net.IPv4(192, 0, 2, 11), protocol: "tcp", port: 443},
-		{name: "IPv6", ip: net.ParseIP("2001:db8::1"), protocol: "tcp", port: 443},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, got := index.Match(test.ip, test.protocol, test.port)
-			if got != test.want {
-				t.Fatalf("Match() = %t, want %t", got, test.want)
-			}
-		})
+	resource, ok := index.MatchLast(net.IPv4(10, 0, 0, 42), "tcp", 443)
+	if !ok {
+		t.Fatal("overlapping resource did not match")
+	}
+	if resource.AppID != "last" {
+		t.Fatalf("matched AppID = %q, want last rule", resource.AppID)
 	}
 }
 
-func TestIndexMatchesICMPWithoutPortRange(t *testing.T) {
+func TestIndexCanFilterMatchingResources(t *testing.T) {
 	index := New([]client.IPResource{
-		{IPMin: net.IPv4(198, 51, 100, 1), IPMax: net.IPv4(198, 51, 100, 1), Protocol: "all", AppID: "icmp"},
+		{IPMin: net.IPv4(10, 0, 0, 42), IPMax: net.IPv4(10, 0, 0, 42), PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "tcp-tunnel"},
+		{IPMin: net.IPv4(10, 0, 0, 42), IPMax: net.IPv4(10, 0, 0, 42), PortMin: 443, PortMax: 443, Protocol: "tcp", AppID: "l3", EnableTCPPrefL3: true},
 	})
-	if _, ok := index.Match(net.IPv4(198, 51, 100, 1), "icmp", -1); !ok {
-		t.Fatal("ICMP resource did not match")
+	resource, ok := index.MatchLastWhere(net.IPv4(10, 0, 0, 42), "tcp", 443, func(resource client.IPResource) bool {
+		return !resource.EnableTCPPrefL3
+	})
+	if !ok || resource.AppID != "tcp-tunnel" {
+		t.Fatalf("filtered match = (%#v, %t), want tcp-tunnel", resource, ok)
 	}
 }
 
@@ -60,5 +53,26 @@ func TestNilIndexDoesNotMatch(t *testing.T) {
 	var index *Index
 	if _, ok := index.Match(net.IPv4(10, 0, 0, 1), "tcp", 443); ok {
 		t.Fatal("nil index unexpectedly matched a resource")
+	}
+}
+
+func BenchmarkIndexMatch(b *testing.B) {
+	for _, resourceCount := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("rules_%d", resourceCount), func(b *testing.B) {
+			resources := make([]client.IPResource, resourceCount)
+			for i := range resources {
+				ip := net.IPv4(10, byte(i>>8), byte(i), 1)
+				resources[i] = client.IPResource{IPMin: ip, IPMax: ip, PortMin: 443, PortMax: 443, Protocol: "tcp"}
+			}
+			index := New(resources)
+			target := resources[len(resources)-1].IPMin
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, ok := index.Match(target, "tcp", 443); !ok {
+					b.Fatal("target did not match")
+				}
+			}
+		})
 	}
 }

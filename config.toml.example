@@ -1,36 +1,57 @@
+# NWAFU Connect configuration example (aTrust only)
+# Note: vpn.nwafu.edu.cn is not directly reachable from inside the campus network.
+# Every key below can also be overridden via NWAFU_CONNECT_<UPPER_KEY> environment
+# variables or explicit CLI flags (precedence: defaults < TOML < env < CLI).
+
 server_address = "vpn.nwafu.edu.cn"
 server_port = 443
 username = "student_id"
 password = "password"
 totp_secret = "" # Base32 secret for LDAP secondary TOTP authentication
-disable_remote_dns = false
+
+# Local proxy listeners (disabled automatically when browser_mode = true)
 socks_bind = "127.0.0.1:1080"
 socks_user = ""
 socks_passwd = ""
 http_bind = "127.0.0.1:1081"
+shadowsocks_url = "" # "ss://aes-128-gcm:password@127.0.0.1:1082"
+dial_direct_proxy = "" # "http://127.0.0.1:7890" or "socks5://127.0.0.1:7890"
+proxy_all = false
 
 # Managed browser mode (Windows/macOS/Linux). Uses an isolated Chromium profile
-# and a private loopback proxy; configured proxy listeners are not started.
+# and a private loopback VPN-only proxy; configured public listeners are not started.
 browser_mode = false
 browser_path = "" # Auto-detect Chrome, Edge, Chromium, or Brave when empty.
-browser_url = "" # Empty shows a home page generated from server-issued resources.
+browser_url = "" # Empty shows the resource portal generated from server-issued resources.
 browser_profile_dir = "" # Empty uses a temporary profile removed when the browser exits.
 browser_stay_running = false # Keep the VPN session alive after the managed browser closes.
-browser_state_file = "" # Optional private state file used by desktop integrations.
-shadowsocks_url = "" # "ss://aes-128-gcm:password@:1082"
-dial_direct_proxy = "" # "http://127.0.0.1:7890" or "socks://127.0.0.1:7890"
+browser_state_file = "" # Optional private state file used by desktop tray integration.
+
+# Tunnel & TUN settings
 tcp_tunnel_mode = false
 tun_mode = false
 add_route = false
-dns_ttl = 3600
-disable_keep_alive = false
-keep_alive_url = "" # "https://www.cnki.net/favicon.ico"
-remote_dns_server = "auto"
-secondary_dns_server = "114.114.114.114"
-dns_server_bind = ""
 dns_hijack = false
 fake_ip = false
+
+# DNS settings
+disable_remote_dns = false
+dns_ttl = 3600
+remote_dns_server = "auto" # "auto" uses gateway-provided DNS; falls back automatically if omitted
+secondary_dns_server = "auto" # "auto" uses secondary gateway DNS or 114.114.114.114; "" uses system DNS
+dns_server_bind = "" # e.g. "127.0.0.1:53"
+local_dns_server = "" # Optional DNS server for resolving the VPN gateway hostname, e.g. "223.5.5.5"
+
+# Keep-alive & underlay binding
+disable_keep_alive = false
+keep_alive_url = "" # e.g. "https://www.cnki.net/favicon.ico"
+bind_interface = "" # Optional physical interface name for VPN underlay sockets
+auto_detect_interface = false # Auto-detect underlay interface (avoid enabling alongside another Fake-IP VPN)
+
+# Debugging (sensitive data — use only in controlled troubleshooting)
 debug_dump = false
+debug_pcap_file = "" # Reconstruct encrypted VPN underlay TCP traffic into a PCAP file
+debug_tls_log_file = "" # Export TLS session secrets in NSS key log format for Wireshark
 
 # Port forwarding
 port_forwarding = [
@@ -40,20 +61,24 @@ port_forwarding = [
 ]
 
 custom_dns = [
-#    { host_name = "library.nwafu.edu.cn", ip = "10.0.0.10"}
-#    { host_name = "example.nwafu.edu.cn", ip = "10.0.0.11"}
+#    { host_name = "library.nwafu.edu.cn", ip = "10.0.0.10" },
+#    { host_name = "example.nwafu.edu.cn", ip = "10.0.0.11" }
 ]
 
-# aTrust authentication settings
-auth_type = "auth/psw" # LDAP: auth/psw; SMS: auth/smsCheckCode; enterprise WeChat: auth/qywechat
-login_domain = "LDAP" # SMS uses sms73926; enterprise WeChat uses wechat
+# aTrust authentication & session settings
+auth_type = "auth/psw" # LDAP: auth/psw; SMS: auth/smsCheckCode; WeCom: auth/qywechat; CAS: auth/cas; OAuth2: auth/httpsOauth2
+login_domain = "LDAP" # LDAP uses LDAP; SMS uses sms73926; WeCom uses wechat
 client_data_file = "client_data.json"
-graph_code_file = "" # Optional: captcha image will open in browser if this left empty. If set, the program will save the captcha image to this file and ask user to input the code in terminal.
-qywechat_qrcode_file = "qywechat_qrcode.png" # Relative paths are saved in the current working directory; empty disables saving.
+graph_code_file = "" # Empty opens a local browser captcha page; set a file path for terminal coordinate entry
+qywechat_qrcode_file = "qywechat_qrcode.png" # Empty disables PNG output
 qywechat_qrcode_terminal = true
 qywechat_qrcode_browser = true
-phone = ""
-update_best_nodes_interval = 300
+phone = "" # e.g. "86-13800138000" for SMS login
+cas_ticket = ""
+oauth2_code = ""
+update_best_nodes_interval = 300 # Seconds; 0 disables periodic best-node probing
+session_refresh_interval = 1800 # Seconds; 0 disables periodic aTrust authConfig SID refresh
+mac_addresses = [] # Optional MAC addresses reported to aTrust; auto-generated when empty
 sid = ""
 device_id = ""
 sign_key = ""

@@ -1,0 +1,426 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Format, Vet & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Linux Fyne test dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libayatana-appindicator3-dev
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  cli:
+    name: CLI (${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, linux, darwin]
+        goarch: [amd64, 386]
+        exclude:
+          - goarch: 386
+            goos: darwin
+        include:
+          - { goos: linux, goarch: arm, goarm: 7 }
+          - { goos: linux, goarch: arm, goarm: 6 }
+          - { goos: linux, goarch: arm, goarm: 5 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: riscv64 }
+          - { goos: windows, goarch: arm64 }
+          - { goos: linux, goarch: mips64 }
+          - { goos: linux, goarch: mips64le }
+          - { goos: linux, goarch: mipsle }
+          - { goos: linux, goarch: mips }
+    runs-on: ubuntu-latest
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build CLI and stdio proxy helper
+        run: |
+          set -euo pipefail
+          ASSET_SUFFIX="${GOOS}-${GOARCH}${GOARM:-}"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION_FLAGS="-X main.nwafuConnectVersion=${VERSION}"
+          else
+            VERSION="dev"
+            VERSION_FLAGS="-X main.nwafuConnectVersion=dev -X main.CommitID=${SHORT_SHA}"
+          fi
+          EXT=""
+          if [[ "${GOOS}" == "windows" ]]; then
+            EXT=".exe"
+          fi
+          mkdir -p build_assets dist
+          go build -trimpath -ldflags "-s -w -buildid= ${VERSION_FLAGS}" \
+            -o "build_assets/nwafu-connect${EXT}" .
+          go build -trimpath -ldflags "-s -w -buildid=" \
+            -o "build_assets/nwafu-connect-proxy${EXT}" ./cmd/nwafu-connect-proxy
+          cp config.toml.example build_assets/config.toml.example
+          (cd build_assets && zip -9r "../dist/nwafu-connect-${ASSET_SUFFIX}.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-cli-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  desktop-macos:
+    name: Desktop macOS ${{ matrix.arch }} (DMG + Portable)
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: amd64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build macOS application bundle
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION_FLAGS="-X main.nwafuConnectVersion=${VERSION}"
+            BUNDLE_VER="${VERSION}"
+          else
+            VERSION="dev"
+            VERSION_FLAGS="-X main.nwafuConnectVersion=dev -X main.CommitID=${SHORT_SHA}"
+            BUNDLE_VER="1.5.0"
+          fi
+          mkdir -p "dist/NWAFU Connect.app/Contents/MacOS" "dist/NWAFU Connect.app/Contents/Resources"
+          go build -trimpath -ldflags "-s -w" -o "dist/NWAFU Connect.app/Contents/MacOS/nwafu-connect-desktop" ./cmd/nwafu-connect-desktop
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w ${VERSION_FLAGS}" -o "dist/NWAFU Connect.app/Contents/MacOS/nwafu-connect" .
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "dist/NWAFU Connect.app/Contents/MacOS/nwafu-connect-proxy" ./cmd/nwafu-connect-proxy
+          cp packaging/macos/Info.plist "dist/NWAFU Connect.app/Contents/Info.plist"
+          plutil -replace CFBundleShortVersionString -string "${BUNDLE_VER}" "dist/NWAFU Connect.app/Contents/Info.plist"
+          plutil -replace CFBundleVersion -string "${BUNDLE_VER}" "dist/NWAFU Connect.app/Contents/Info.plist"
+      - name: Create application icon
+        run: |
+          set -euo pipefail
+          mkdir -p dist/NWAFUConnect.iconset
+          source=cmd/nwafu-connect-desktop/assets/app-icon.png
+          sips -z 16 16 "$source" --out dist/NWAFUConnect.iconset/icon_16x16.png
+          sips -z 32 32 "$source" --out dist/NWAFUConnect.iconset/icon_16x16@2x.png
+          sips -z 32 32 "$source" --out dist/NWAFUConnect.iconset/icon_32x32.png
+          sips -z 64 64 "$source" --out dist/NWAFUConnect.iconset/icon_32x32@2x.png
+          sips -z 128 128 "$source" --out dist/NWAFUConnect.iconset/icon_128x128.png
+          sips -z 256 256 "$source" --out dist/NWAFUConnect.iconset/icon_128x128@2x.png
+          sips -z 256 256 "$source" --out dist/NWAFUConnect.iconset/icon_256x256.png
+          sips -z 512 512 "$source" --out dist/NWAFUConnect.iconset/icon_256x256@2x.png
+          sips -z 512 512 "$source" --out dist/NWAFUConnect.iconset/icon_512x512.png
+          sips -z 1024 1024 "$source" --out dist/NWAFUConnect.iconset/icon_512x512@2x.png
+          iconutil -c icns dist/NWAFUConnect.iconset -o "dist/NWAFU Connect.app/Contents/Resources/NWAFUConnect.icns"
+      - name: Package DMG and Portable ZIP
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "${GITHUB_REF_TYPE}" != "tag" ]] && VERSION="dev"
+          codesign --force --deep --sign - "dist/NWAFU Connect.app"
+          mkdir -p dist/dmg dist/out dist/portable
+          cp -R "dist/NWAFU Connect.app" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -quiet -volname "NWAFU Connect" -srcfolder dist/dmg -ov -format UDZO \
+            "dist/out/NWAFU-Connect-${VERSION}-macos-${{ matrix.arch }}.dmg"
+          cp -R "dist/NWAFU Connect.app" dist/portable/
+          cp config.toml.example dist/portable/config.toml.example
+          ditto -c -k --sequesterRsrc dist/portable \
+            "dist/out/NWAFU-Connect-${VERSION}-macos-${{ matrix.arch }}-portable.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-macos-${{ matrix.arch }}
+          path: dist/out/*
+          if-no-files-found: error
+
+  desktop-windows:
+    name: Desktop Windows ${{ matrix.arch }} (Setup + Portable)
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            cc: x86_64-w64-mingw32-gcc
+          - arch: arm64
+            cc: aarch64-w64-mingw32-gcc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install packaging tools and llvm-mingw
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          choco install innosetup imagemagick --no-progress -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force "$env:TEMP\llvm" | Out-Null
+          gh release download --repo mstorsjo/llvm-mingw --pattern "llvm-mingw-*-ucrt-x86_64.zip" --dir "$env:TEMP\llvm"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $zip = Get-ChildItem "$env:TEMP\llvm\llvm-mingw-*-ucrt-x86_64.zip" | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath "C:\tools" -Force
+          $binDir = (Get-ChildItem "C:\tools\llvm-mingw-*\bin" | Select-Object -First 1).FullName
+          echo $binDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build Windows desktop and CLI binaries
+        shell: powershell
+        env:
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          $shortSha = (git rev-parse --short HEAD).Trim()
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $verFlags = "-X main.nwafuConnectVersion=$version"
+          } else {
+            $version = 'dev'
+            $verFlags = "-X main.nwafuConnectVersion=dev -X main.CommitID=$shortSha"
+          }
+          New-Item -ItemType Directory -Force dist\staging, dist\out | Out-Null
+          go build -trimpath -ldflags "-H=windowsgui -s -w" -o dist\staging\nwafu-connect-desktop.exe ./cmd/nwafu-connect-desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CGO_ENABLED = "0"
+          go build -trimpath -ldflags "-s -w $verFlags" -o dist\staging\nwafu-connect.exe .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -trimpath -ldflags "-s -w" -o dist\staging\nwafu-connect-proxy.exe ./cmd/nwafu-connect-proxy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item config.toml.example dist\staging\config.toml.example
+          magick cmd/nwafu-connect-desktop/assets/app-icon.png -define icon:auto-resize=256,128,64,48,32,16 dist\staging\icon.ico
+      - name: Package Setup EXE and Portable ZIP
+        shell: powershell
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ($env:GITHUB_REF_TYPE -ne 'tag') { $version = 'dev' }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DSourceDir=$pwd\dist\staging" `
+            "/DOutputDir=$pwd\dist\out" `
+            "/DVersion=$version" `
+            "/DArch=${{ matrix.arch }}" `
+            packaging/windows/NWAFUConnect.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist\staging\nwafu-connect-desktop.exe,dist\staging\nwafu-connect.exe,dist\staging\nwafu-connect-proxy.exe,dist\staging\config.toml.example `
+            -DestinationPath "dist\out\NWAFU-Connect-$version-windows-${{ matrix.arch }}-portable.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-windows-${{ matrix.arch }}
+          path: dist/out/*
+          if-no-files-found: error
+
+  desktop-linux:
+    name: Desktop Linux ${{ matrix.arch }} (DEB + Portable)
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install desktop build dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libayatana-appindicator3-dev
+      - name: Build native application
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION_FLAGS="-X main.nwafuConnectVersion=${VERSION}"
+          else
+            VERSION="dev"
+            VERSION_FLAGS="-X main.nwafuConnectVersion=dev -X main.CommitID=${SHORT_SHA}"
+          fi
+          mkdir -p dist/root/DEBIAN dist/root/usr/bin dist/root/usr/share/applications dist/root/usr/share/icons/hicolor/256x256/apps dist/portable dist/out
+          go build -trimpath -ldflags "-s -w" -o dist/root/usr/bin/nwafu-connect-desktop ./cmd/nwafu-connect-desktop
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w ${VERSION_FLAGS}" -o dist/root/usr/bin/nwafu-connect .
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o dist/root/usr/bin/nwafu-connect-proxy ./cmd/nwafu-connect-proxy
+          install -m 0644 packaging/linux/nwafu-connect.desktop dist/root/usr/share/applications/nwafu-connect.desktop
+          install -m 0644 cmd/nwafu-connect-desktop/assets/app-icon.png dist/root/usr/share/icons/hicolor/256x256/apps/nwafu-connect.png
+
+          cp dist/root/usr/bin/nwafu-connect-desktop dist/root/usr/bin/nwafu-connect dist/root/usr/bin/nwafu-connect-proxy dist/portable/
+          cp config.toml.example packaging/linux/nwafu-connect.desktop dist/portable/
+          tar -czf "dist/out/NWAFU-Connect-${VERSION}-linux-${{ matrix.arch }}-portable.tar.gz" -C dist/portable .
+
+          DEB_VERSION="${VERSION}"
+          [[ "${DEB_VERSION}" == "dev" ]] && DEB_VERSION="1.5.0~dev"
+          cat > dist/root/DEBIAN/control <<EOF
+          Package: nwafu-connect
+          Version: ${DEB_VERSION}
+          Section: net
+          Priority: optional
+          Architecture: ${{ matrix.arch }}
+          Maintainer: NWAFU Connect contributors
+          Depends: libgl1, libx11-6, libxcursor1, libxrandr2, libxinerama1, libxi6, libxxf86vm1, libayatana-appindicator3-1
+          Description: NWAFU aTrust managed browser and tray client
+           Private Chromium browser access to server-issued campus resources.
+          EOF
+          dpkg-deb --root-owner-group --build dist/root "dist/out/NWAFU-Connect-${VERSION}-linux-${{ matrix.arch }}.deb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-linux-${{ matrix.arch }}
+          path: dist/out/*
+          if-no-files-found: error
+
+  mobile-android:
+    name: Android Core Libraries (jniLibs .so + gomobile .aar)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Locate Android NDK and build jniLibs (.so)
+        run: |
+          set -euo pipefail
+          NDK_DIR="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [[ -z "${NDK_DIR}" ]]; then
+            NDK_DIR="$(ls -d "${ANDROID_HOME}/ndk/"* 2>/dev/null | sort -V | tail -n1)"
+          fi
+          test -n "${NDK_DIR}"
+          export ANDROID_NDK_HOME="${NDK_DIR}"
+          export ANDROID_NDK_ROOT="${NDK_DIR}"
+          echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${NDK_DIR}" >> "${GITHUB_ENV}"
+          ./scripts/build-lib.sh android
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "${GITHUB_REF_TYPE}" != "tag" ]] && VERSION="dev"
+          mkdir -p dist/out
+          (cd build/android && zip -9r "../../dist/out/NWAFU-Connect-${VERSION}-android-jnilibs.zip" .)
+      - name: Build Android VpnService AAR (gomobile)
+        run: |
+          set -euo pipefail
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+          gomobile init
+          go get golang.org/x/mobile/bind@latest
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "${GITHUB_REF_TYPE}" != "tag" ]] && VERSION="dev"
+          mkdir -p build/aar dist/out
+          gomobile bind -v -target=android -androidapi=24 -ldflags="-s -w" \
+            -o build/aar/nwafu-connect.aar ./mobile
+          (cd build/aar && zip -9r "../../dist/out/NWAFU-Connect-${VERSION}-android-aar.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-mobile-android
+          path: dist/out/*
+          if-no-files-found: error
+
+  mobile-apple:
+    name: Apple Core Libraries (iOS XCFramework + macOS Universal dylib)
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build iOS XCFramework and macOS Universal dylib
+        run: |
+          set -euo pipefail
+          ./scripts/build-lib.sh ios
+          ./scripts/build-lib.sh macos
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "${GITHUB_REF_TYPE}" != "tag" ]] && VERSION="dev"
+          mkdir -p dist/out
+          (cd build/ios && zip -9r "../../dist/out/NWAFU-Connect-${VERSION}-ios-xcframework.zip" NwafuConnect.xcframework)
+          (cd build/macos && zip -9r "../../dist/out/NWAFU-Connect-${VERSION}-macos-universal-lib.zip" libnwafuconnect.dylib libnwafuconnect.h)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-mobile-apple
+          path: dist/out/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [cli, desktop-macos, desktop-windows, desktop-linux, mobile-android, mobile-apple]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Generate SHA256 checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload --clobber "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "NWAFU Connect ${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi

@@ -50,10 +50,19 @@ func setDarwin(enabled bool, executable string) error {
 }
 
 func setWindows(enabled bool, executable string) error {
-	arguments := []string{"add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "NWAFU Connect", "/t", "REG_SZ", "/d", `"` + executable + `"`, "/f"}
+	const runKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+	const valueName = "NWAFU Connect"
 	if !enabled {
-		arguments = []string{"delete", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "NWAFU Connect", "/f"}
+		if err := exec.Command("reg.exe", "query", runKey, "/v", valueName).Run(); err != nil {
+			// Value does not exist; disabling autostart is already satisfied.
+			return nil
+		}
+		if output, err := exec.Command("reg.exe", "delete", runKey, "/v", valueName, "/f").CombinedOutput(); err != nil {
+			return fmt.Errorf("update Windows launch at login: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
 	}
+	arguments := []string{"add", runKey, "/v", valueName, "/t", "REG_SZ", "/d", `"` + executable + `"`, "/f"}
 	if output, err := exec.Command("reg.exe", arguments...).CombinedOutput(); err != nil {
 		return fmt.Errorf("update Windows launch at login: %w: %s", err, strings.TrimSpace(string(output)))
 	}

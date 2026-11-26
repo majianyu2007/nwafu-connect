@@ -88,15 +88,16 @@ build_ios() {
     IFS=: read -r sdk goarch goos <<<"$variant"
     cc="$(xcrun --sdk "$sdk" --find clang) -isysroot $(xcrun --sdk "$sdk" --show-sdk-path) -arch $goarch"
     if [ "$sdk" = iphoneos ]; then cc="$cc -miphoneos-version-min=13.0"; else cc="$cc -mios-simulator-version-min=13.0"; fi
-    mkdir -p "build/ios/$sdk"
+    mkdir -p "build/ios/$sdk/include"
     GOOS=$goos GOARCH=$goarch CC="$cc" \
       go build -buildmode=c-archive -trimpath -ldflags "$LDFLAGS" \
       -o "build/ios/$sdk/libnwafuconnect.a" "$PKG"
+    cp "build/ios/$sdk/libnwafuconnect.h" "build/ios/$sdk/include/libnwafuconnect.h"
   done
   rm -rf build/ios/NwafuConnect.xcframework
   xcodebuild -create-xcframework \
-    -library build/ios/iphoneos/libnwafuconnect.a -headers build/ios/iphoneos/libnwafuconnect.h \
-    -library build/ios/iphonesimulator/libnwafuconnect.a -headers build/ios/iphonesimulator/libnwafuconnect.h \
+    -library build/ios/iphoneos/libnwafuconnect.a -headers build/ios/iphoneos/include \
+    -library build/ios/iphonesimulator/libnwafuconnect.a -headers build/ios/iphonesimulator/include \
     -output build/ios/NwafuConnect.xcframework
   echo "built build/ios/NwafuConnect.xcframework"
 }

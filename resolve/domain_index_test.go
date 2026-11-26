@@ -7,12 +7,12 @@ import (
 )
 
 func TestDomainResourceIndexRespectsLabelBoundaries(t *testing.T) {
-	resource := client.DomainResourceSet{{AppID: "campus"}}
-	index := newDomainResourceIndex(map[string]client.DomainResourceSet{"example.com": resource})
+	resource := []client.DomainResource{{AppID: "campus"}}
+	index := newDomainResourceIndex(client.DomainResources{"example.com": resource})
 	for _, host := range []string{"example.com", "library.example.com"} {
-		matched, domain, ok := index.Match(host)
+		domain, matched, ok := index.Match(host)
 		if !ok || domain != "example.com" || len(matched) != 1 || matched[0].AppID != "campus" {
-			t.Fatalf("Match(%q) = (%#v, %q, %t), want campus example.com", host, matched, domain, ok)
+			t.Fatalf("Match(%q) = (%q, %#v, %t), want campus example.com", host, domain, matched, ok)
 		}
 	}
 	if _, _, ok := index.Match("malicious-example.com"); ok {
@@ -21,26 +21,26 @@ func TestDomainResourceIndexRespectsLabelBoundaries(t *testing.T) {
 }
 
 func TestDomainResourceIndexWildcardRequiresSubdomain(t *testing.T) {
-	index := newDomainResourceIndex(map[string]client.DomainResourceSet{
+	index := newDomainResourceIndex(client.DomainResources{
 		"*.example.com": {{AppID: "wildcard"}},
 	})
 	if _, _, ok := index.Match("example.com"); ok {
 		t.Fatal("wildcard unexpectedly matched the apex domain")
 	}
-	resources, _, ok := index.Match("library.example.com")
+	_, resources, ok := index.Match("library.example.com")
 	if !ok || resources[0].AppID != "wildcard" {
 		t.Fatalf("wildcard resources = %#v, matched = %t", resources, ok)
 	}
 }
 
-func TestDomainResourceIndexPrefersLongestSuffix(t *testing.T) {
-	index := newDomainResourceIndex(map[string]client.DomainResourceSet{
-		"example.com":         {{AppID: "parent"}},
-		"library.example.com": {{AppID: "library"}},
+func TestDomainResourceIndexCollectsSpecificAndAncestorRules(t *testing.T) {
+	index := newDomainResourceIndex(client.DomainResources{
+		"*.example.com":       {{AppID: "parent", PortMin: 80, PortMax: 80, Protocol: "tcp"}},
+		"library.example.com": {{AppID: "library", PortMin: 443, PortMax: 443, Protocol: "tcp"}},
 	})
-	resources, domain, ok := index.Match("catalog.library.example.com")
-	if !ok || domain != "library.example.com" || resources[0].AppID != "library" {
-		t.Fatalf("Match() = (%#v, %q, %t), want most-specific library resource", resources, domain, ok)
+	domain, resources, ok := index.Match("catalog.library.example.com")
+	if !ok || domain != "library.example.com" || len(resources) != 2 || resources[0].AppID != "library" || resources[1].AppID != "parent" {
+		t.Fatalf("Match() = (%q, %#v, %t), want library then parent", domain, resources, ok)
 	}
 }
 

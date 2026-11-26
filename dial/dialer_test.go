@@ -25,7 +25,7 @@ func (s *recordingStack) Run() error { return nil }
 
 func (s *recordingStack) SetupResolve(zcdns.LocalServer) {}
 
-func (s *recordingStack) SetupIPPool(*ippool.IPPool[client.DomainResourceSet]) {}
+func (s *recordingStack) SetupIPPool(*ippool.IPPool[[]client.DomainResource]) {}
 
 func (s *recordingStack) DialTCP(_ context.Context, address *net.TCPAddr) (net.Conn, error) {
 	s.tcpAddress = address
